@@ -33,11 +33,13 @@
 
 | 命令 | 权限 | 说明 |
 |------|------|------|
+| `/letmeask top [数量]` | 全员 | 答题排行榜（默认前 10，最多 20） |
+| `/letmeask stats [玩家名]` | 全员 | 查看答题统计（默认查自己） |
+| `/letmeask status` | 全员 | 查看插件状态 |
 | `/letmeask start` | letmeask.admin | 启动定时出题 |
 | `/letmeask stop` | letmeask.admin | 停止定时出题 |
 | `/letmeask question [force]` | letmeask.admin | 手动发布新题目 |
 | `/letmeask reload` | letmeask.admin | 重载配置文件 |
-| `/letmeask status` | letmeask.admin | 查看插件状态 |
 
 ## 配置
 
@@ -79,12 +81,16 @@ messages:
 ### questions.yml
 
 ```yaml
-# 格式：题目=答案（每行一条，多答案用 | 分隔，答对任一即可）
+# 纯字符串格式：题目=答案（多答案用 | 分隔，答对任一即可）
+# map 格式：{q, a, weight}，权重越大越容易被抽中（默认 1）
 questions:
   - "中国首都=北京"
   - "2+2=4"
   - "香蕉是什么颜色=黄色|黄"
+  - {q: "太阳系最大的行星是什么", a: "木星|Jupiter", weight: 2}
 ```
+
+统计数据保存在 `plugins/LetMeAsk/stats.yml`（累计出题/答对数、每人答对次数与奖金）。
 
 ## 构建
 

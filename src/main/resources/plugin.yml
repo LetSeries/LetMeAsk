@@ -12,11 +12,14 @@ softdepend:
 
 commands:
   letmeask:
-    description: "管理答题活动（子命令: start|stop|question|reload|status）"
-    usage: "/letmeask <start|stop|question|reload|status>"
-    permission: letmeask.admin
+    description: "答题活动（查询: top|stats|status；管理: start|stop|question|reload）"
+    usage: "/letmeask <top|stats|status|start|stop|question|reload>"
+    permission: letmeask.use
 
 permissions:
+  letmeask.use:
+    description: "使用 LetMeAsk 查询命令（top/stats/status）"
+    default: true
   letmeask.admin:
     description: "管理 LetMeAsk 插件"
     default: op
