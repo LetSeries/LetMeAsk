@@ -82,13 +82,13 @@ questions:
 
 ## 构建
 
-使用 Maven：
+使用 Maven（推荐）：
 
 ```bash
 mvn clean package
 ```
 
-或使用 Gradle：
+或使用 Gradle（依赖 `libs/` 目录下的本地 jar，可离线构建）：
 
 ```bash
 gradle build

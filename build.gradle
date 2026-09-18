@@ -17,8 +17,8 @@ repositories {
 }
 
 dependencies {
-    compileOnly 'io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT'
-    compileOnly 'org.jetbrains:annotations:24.0.1'
+    compileOnly files('libs/paper-api.jar')
+    compileOnly files('libs/annotations.jar')
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -34,6 +34,6 @@ processResources {
 
 jar {
     archiveBaseName.set('QuizPlugin')
-    archiveVersion.set('1.0.0')
+    archiveVersion.set('1.1.0')
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
