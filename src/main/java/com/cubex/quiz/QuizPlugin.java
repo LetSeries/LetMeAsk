@@ -176,9 +176,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return !usingFallback || !questions.isEmpty();
     }
 
-    /** 解析 "题目=答案1|答案2" 行，非法行跳过。 */
+    /** 解析 "题目=答案1|答案2" 行，非法行与重复题目跳过。 */
     private List<Question> parseQuestions(List<String> raw) {
         List<Question> parsed = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
         for (String line : raw) {
             if (line == null) continue;
             String[] parts = line.split("=", 2);
@@ -187,12 +188,19 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             String q = parts[0].trim();
             String a = parts[1].trim();
             if (q.isEmpty() || a.isEmpty()) continue;
+            if (!seen.add(q)) {
+                getLogger().warning("题库存在重复题目，已跳过: " + q);
+                continue;
+            }
             List<String> answers = new ArrayList<>();
             for (String alt : a.split("\\|")) {
                 String t = alt.trim();
                 if (!t.isEmpty()) answers.add(t);
             }
-            if (answers.isEmpty()) continue;
+            if (answers.isEmpty()) {
+                seen.remove(q);
+                continue;
+            }
             parsed.add(new Question(q, answers));
         }
         return parsed;
@@ -276,6 +284,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     private boolean postNewQuestion(boolean force) {
         if (!force && (currentQuestion != null || verifying || paused)) return false;
+        if (force && verifying) {
+            // 管理员强制出题：先解锁验证状态，并清掉被验证者的连击，避免旧回调干扰新题
+            if (verifyingPlayer != null) resetStreak(verifyingPlayer);
+            clearQuestionState();
+        }
         publishQuestion();
         nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
         return true;
@@ -325,7 +338,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     }
 
     private String normalize(String s) {
-        return s == null ? "" : s.replaceAll("[^\\p{L}\\p{N}]+", "").toLowerCase();
+        // Locale.ROOT：避免土耳其语等 locale 下 I/i 大小写转换异常
+        return s == null ? "" : s.replaceAll("[^\\p{L}\\p{N}]+", "").toLowerCase(Locale.ROOT);
     }
 
     private int levenshtein(String s1, String s2) {
@@ -408,6 +422,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         String msg = event.getMessage().trim();
         Player player = event.getPlayer();
+
+        // 超长刷屏消息直接拒绝，避免无意义的模糊匹配计算
+        if (msg.length() > 100) return;
 
         if (matchesAny(msg, snapshot.answers)) {
             // 切主线程发奖，携带题目 id：若题目已轮换/作废则拒绝，防止旧题答案领走新题奖励
@@ -538,8 +555,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             return;
         }
 
-        // Normal awarding
-        resetStreak(player.getUniqueId());
+        // Normal awarding — 注意：这里不能 resetStreak，否则连击永远累积不到阈值，
+        // anti-bot-correct-answer-threshold 将形同虚设。连击只靠时间窗口衰减/超时/验证/退出清理。
         clearQuestionState();
         awardWinner(player);
     }
@@ -583,7 +600,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             return;
         }
 
-        Object d = depositTo(winner.getName(), rewardAmount);
+        Object d = depositTo(winner, rewardAmount);
         if (!isEconomyResponseSuccess(d)) {
             // refund payer if possible
             String err = getEconomyResponseError(d);
@@ -669,6 +686,17 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (response != null) return response;
         }
         return null;
+    }
+
+    /** 给在线获奖者发奖：优先用 OfflinePlayer/UUID，避免改名玩家按旧名错发。 */
+    private Object depositTo(Player winner, double amount) {
+        if (econ == null) return null;
+        // 在线玩家优先走 OfflinePlayer 通道（UUID 精确，防改名错发）
+        try {
+            Object response = invokeEconomy("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, winner, amount);
+            if (response != null) return response;
+        } catch (Throwable ignored) {}
+        return depositTo(winner.getName(), amount);
     }
 
     private Object depositTo(String who, double amount) {
@@ -786,6 +814,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             switch (sub) {
                 case "start":
                     startTask();
+                    if (currentQuestion == null && !verifying && !paused) {
+                        publishQuestion();
+                        nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
+                    }
                     sender.sendMessage("§a已启动定时出题");
                     return true;
                 case "stop":
@@ -811,6 +843,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 case "status": {
                     sender.sendMessage("§6LetMeAsk 状态:");
                     sender.sendMessage(" 自动出题: " + (tickerTask != null ? "§a运行中" : "§c已停止"));
+                    sender.sendMessage(" 题库数量: §f" + questions.size());
                     sender.sendMessage(" 当前题目: " + (currentQuestion != null ? currentQuestion.question : "无"));
                     sender.sendMessage(" 暂停(余额不足): " + (paused ? "§c是" : "§a否"));
                     sender.sendMessage(" 人机验证锁定: " + (verifying ? "§c是" : "§a否"));
