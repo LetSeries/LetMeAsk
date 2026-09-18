@@ -1,6 +1,7 @@
 name: LetMeAsk
 main: com.cubex.quiz.QuizPlugin
 version: 1.1.0
+api-version: "1.20"
 description: "在聊天栏出题的抢答活动插件（支持 Vault 经济，集成人机验证）"
 authors:
   - Generated

@@ -33,7 +33,7 @@ processResources {
 }
 
 jar {
-    archiveBaseName.set('QuizPlugin')
+    archiveBaseName.set('LetMeAsk')
     archiveVersion.set('1.1.0')
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }

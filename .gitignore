@@ -1,0 +1,21 @@
+# Build outputs
+target/
+build/
+out/
+
+# Gradle
+.gradle/
+
+# IDE
+*.iml
+.idea/
+.vscode/
+*.eclipse
+.settings/
+.classpath
+.project
+
+# Misc
+*.class
+*.log
+*.orig

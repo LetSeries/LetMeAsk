@@ -12,11 +12,18 @@
 
 payer: Server
 reward: 50.0
+# 自动出题间隔（秒），最小 5 秒
 question-interval-seconds: 60
 question-timeout-seconds: 30
+# 回答用时（秒，支持小数）小于等于该值会触发人机验证
 anti-bot-threshold-seconds: 1
 # 同一玩家连续答对达到此次数时触发人机验证；设置为 0 可禁用此条件
 anti-bot-correct-answer-threshold: 3
+# 连击统计时间窗口（秒）：超过该时间未答对则连击清零；0=不清零
+anti-bot-streak-window-seconds: 300
+# 人机验证超时（秒）：回调长时间未返回时自动解锁并作废本轮，最小 10 秒
+verify-timeout-seconds: 120
+# 0-1，答案相似度阈值，越高越严格；1.0 = 严格精确匹配
 fuzzy-similarity-threshold: 0.75
 
 # 消息前缀，支持 Bukkit 颜色代码（例如 &b[答题]）

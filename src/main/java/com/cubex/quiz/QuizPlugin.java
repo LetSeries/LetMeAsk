@@ -39,14 +39,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile Question currentQuestion = null;
     private volatile boolean paused = false; // paused due to payer insufficient funds
     private volatile boolean verifying = false; // question locked while human verification pending
+    private volatile java.util.UUID verifyingPlayer = null;
+    private volatile long verifyStartMillis = 0L;
+    private volatile long nextPostAtMillis = 0L; // when the next question may be posted
+    private volatile boolean economyAvailable = false;
 
     // config values
     private String payerName;
     private double rewardAmount;
     private long questionIntervalSeconds;
     private long questionTimeoutSeconds;
-    private int antiBotThresholdSeconds;
+    private double antiBotThresholdSeconds;
     private int antiBotCorrectAnswerThreshold;
+    private long antiBotStreakWindowSeconds;
+    private long verifyTimeoutSeconds;
     private double fuzzySimilarityThreshold = 0.75; // default similarity threshold (0-1)
 
     // resolved payer information (support UUID / OfflinePlayer / Server / LittleSkin via prefix)
@@ -64,6 +70,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     // scheduler handle
     private BukkitTask tickerTask;
     private final Map<java.util.UUID, Integer> correctAnswerCounts = new HashMap<>();
+    private final Map<java.util.UUID, Long> lastCorrectTimes = new HashMap<>();
 
     @Override
     public void onEnable() {
@@ -74,8 +81,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // load configuration files
         loadConfigValues();
 
-        if (!setupEconomy()) {
-            getLogger().severe("Vault economy not found — plugin will continue to load, but all payout logic is disabled until Vault is installed");
+        economyAvailable = setupEconomy();
+        if (!economyAvailable) {
+            getLogger().warning("未找到 Vault 经济插件：以“仅公告、无奖励”模式运行，安装 Vault 后请重启或重载插件");
         }
 
         getServer().getPluginManager().registerEvents(this, this);
@@ -112,12 +120,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         questionsCfg = YamlConfiguration.loadConfiguration(questionsFile);
 
         payerName = baseCfg.getString("payer", "Server");
-        rewardAmount = baseCfg.getDouble("reward", 50.0);
-        questionIntervalSeconds = baseCfg.getLong("question-interval-seconds", 60L);
-        questionTimeoutSeconds = baseCfg.getLong("question-timeout-seconds", 30L);
-        antiBotThresholdSeconds = baseCfg.getInt("anti-bot-threshold-seconds", 1);
-        antiBotCorrectAnswerThreshold = baseCfg.getInt("anti-bot-correct-answer-threshold", 3);
-        fuzzySimilarityThreshold = baseCfg.getDouble("fuzzy-similarity-threshold", fuzzySimilarityThreshold);
+        rewardAmount = Math.max(0.0, baseCfg.getDouble("reward", 50.0));
+        questionIntervalSeconds = Math.max(5L, baseCfg.getLong("question-interval-seconds", 60L));
+        questionTimeoutSeconds = Math.max(0L, baseCfg.getLong("question-timeout-seconds", 30L));
+        antiBotThresholdSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-threshold-seconds", 1.0));
+        antiBotCorrectAnswerThreshold = Math.max(0, baseCfg.getInt("anti-bot-correct-answer-threshold", 3));
+        antiBotStreakWindowSeconds = Math.max(0L, baseCfg.getLong("anti-bot-streak-window-seconds", 300L));
+        verifyTimeoutSeconds = Math.max(10L, baseCfg.getLong("verify-timeout-seconds", 120L));
+        fuzzySimilarityThreshold = Math.min(1.0, Math.max(0.0,
+                baseCfg.getDouble("fuzzy-similarity-threshold", fuzzySimilarityThreshold)));
 
         // resolve payer to a stable identifier (UUID/name/Server/LittleSkin)
         resolvePayer(payerName);
@@ -149,6 +160,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     private void startTask() {
         stopTask();
+        nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
         tickerTask = new BukkitRunnable() {
             @Override
             public void run() {
@@ -158,7 +170,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     getLogger().log(Level.SEVERE, "Error in quiz tick", t);
                 }
             }
-        }.runTaskTimer(this, 20L, Math.max(1L, questionIntervalSeconds) * 20L);
+        }.runTaskTimer(this, 20L, 20L); // 1s 粒度，保证超时与验证兜底准时
     }
 
     private String messagePrefix() {
@@ -215,11 +227,17 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     private boolean postNewQuestion(boolean force) {
         if (!force && (currentQuestion != null || verifying || paused)) return false;
-        Question q = questions.get(random.nextInt(questions.size()));
-        currentQuestion = q;
-        currentQuestion.postTime = System.currentTimeMillis();
-        Bukkit.broadcastMessage(messagePrefix() + " §f新题目: §f" + q.question);
+        publishQuestion();
+        nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
         return true;
+    }
+
+    private void publishQuestion() {
+        Question q = questions.get(random.nextInt(questions.size()));
+        q.postTime = System.currentTimeMillis();
+        q.id = java.util.UUID.randomUUID();
+        currentQuestion = q;
+        Bukkit.broadcastMessage(messagePrefix() + " §f新题目: §f" + q.question);
     }
 
     private boolean matches(String provided, String answer) {
@@ -227,13 +245,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         String a = normalize(provided);
         String b = normalize(answer);
         if (a.isEmpty() || b.isEmpty()) return false;
-        if (a.equalsIgnoreCase(b)) return true;
+        if (a.equals(b)) return true;
+        if (fuzzySimilarityThreshold >= 1.0) return false; // 1.0 = 严格精确匹配
         int dist = levenshtein(a, b);
         int max = Math.max(a.length(), b.length());
         double sim = 1.0 - (double) dist / (double) max;
-        // Permit one typo in short answers, but not an omitted or extra character.
-        if (dist == 1 && a.length() == b.length() && max >= 2) return true;
-        return sim >= fuzzySimilarityThreshold || (dist <= 2 && max >= 4);
+        return sim >= fuzzySimilarityThreshold;
     }
 
     private String normalize(String s) {
@@ -258,63 +275,93 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private final List<Question> questions = new ArrayList<>();
 
     private void tick() {
-        // If paused, check payer balance; resume when enough funds
-        if (paused) {
+        if (!economyAvailable) {
+            // 降级模式：无 Vault 时不暂停出题逻辑，但 awardWinner 只发公告
+            if (paused) paused = false;
+        } else if (paused) {
+            // 暂停中：资金足额则恢复，否则等待
             double bal = getBalanceOf(payerDisplay);
             if (bal >= rewardAmount) {
                 paused = false;
                 Bukkit.broadcastMessage(messagePrefix() + " §a资金已足额，恢复出题。当前余额: " + bal);
             } else {
-                // still paused
                 return;
             }
         }
 
-        // If a question is active, check for timeout
+        // 验证超时兜底：回调永不返回时解锁，避免永久锁死
+        if (verifying) {
+            long elapsedMillis = System.currentTimeMillis() - verifyStartMillis;
+            if (elapsedMillis >= verifyTimeoutSeconds * 1000L) {
+                getLogger().warning("人机验证超时（" + verifyTimeoutSeconds + "s），自动解锁并作废本轮题目");
+                Bukkit.broadcastMessage(messagePrefix() + " §c人机验证超时，本轮题目作废。");
+                clearQuestionState();
+            }
+            return;
+        }
+
+        // 题目超时：公布答案、清空连击、安排下一题
         if (currentQuestion != null) {
-            if (questionTimeoutSeconds > 0 && !verifying) {
-                long elapsed = (System.currentTimeMillis() - currentQuestion.postTime) / 1000L;
-                if (elapsed >= questionTimeoutSeconds) {
+            if (questionTimeoutSeconds > 0) {
+                long elapsedMillis = System.currentTimeMillis() - currentQuestion.postTime;
+                if (elapsedMillis >= questionTimeoutSeconds * 1000L) {
                     Bukkit.broadcastMessage(messagePrefix() + " §c无人答对！答案是: §f" + currentQuestion.answer);
+                    correctAnswerCounts.clear();
+                    lastCorrectTimes.clear();
                     currentQuestion = null;
+                    nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
                 }
             }
             return;
         }
 
-        // If verifying is in progress, skip
-        if (verifying) return;
+        // 到点出题
+        if (System.currentTimeMillis() >= nextPostAtMillis) {
+            publishQuestion();
+            nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
+        }
+    }
 
-        // Post a new question
-        Question q = questions.get(random.nextInt(questions.size()));
-        currentQuestion = q;
-        currentQuestion.postTime = System.currentTimeMillis();
-
-        Bukkit.broadcastMessage(messagePrefix() + " §f新题目: §f" + q.question + " §6");
+    /** 清理本轮题目与验证状态（验证通过/失败/超时统一入口）。 */
+    private void clearQuestionState() {
+        currentQuestion = null;
+        verifying = false;
+        verifyingPlayer = null;
+        verifyStartMillis = 0L;
     }
 
     @EventHandler
     public void onPlayerChat(AsyncPlayerChatEvent event) {
-        if (currentQuestion == null || verifying) return;
+        Question snapshot = currentQuestion;
+        if (snapshot == null || verifying) return;
 
         String msg = event.getMessage().trim();
         Player player = event.getPlayer();
 
-        if (matches(msg, currentQuestion.answer)) {
-            // Mark answered synchronously to avoid race — switch to main thread
-            event.setCancelled(false);
-            // Handle on main thread
-            Bukkit.getScheduler().runTask(this, () -> handleCorrectAnswer(player));
+        if (matches(msg, snapshot.answer)) {
+            // 切主线程发奖，携带题目 id：若题目已轮换/作废则拒绝，防止旧题答案领走新题奖励
+            Bukkit.getScheduler().runTask(this, () -> handleCorrectAnswer(player, snapshot.id));
         }
     }
 
-    private synchronized void handleCorrectAnswer(Player player) {
-        if (currentQuestion == null || verifying) return; // double-check
+    private synchronized void handleCorrectAnswer(Player player, java.util.UUID questionId) {
+        Question snapshot = currentQuestion;
+        if (snapshot == null || verifying) return; // double-check
+        if (snapshot.id == null || !snapshot.id.equals(questionId)) return; // 题目已轮换或作废
 
         long now = System.currentTimeMillis();
-        long deltaSecs = (now - currentQuestion.postTime) / 1000L;
+        double deltaSecs = (now - snapshot.postTime) / 1000.0; // 浮点精度，避免 1.9s 被截断成 1s
 
-        int correctAnswerCount = correctAnswerCounts.merge(player.getUniqueId(), 1, Integer::sum);
+        // 连击计数：超出时间窗口自动清零，避免一次刷满后永久触发验证
+        java.util.UUID uuid = player.getUniqueId();
+        if (antiBotStreakWindowSeconds > 0) {
+            Long last = lastCorrectTimes.get(uuid);
+            if (last != null && now - last > antiBotStreakWindowSeconds * 1000L) {
+                correctAnswerCounts.remove(uuid);
+            }
+        }
+        lastCorrectTimes.put(uuid, now);
+        int correctAnswerCount = correctAnswerCounts.merge(uuid, 1, Integer::sum);
         boolean answeredTooFast = deltaSecs <= antiBotThresholdSeconds;
         boolean answeredTooOften = antiBotCorrectAnswerThreshold > 0
                 && correctAnswerCount >= antiBotCorrectAnswerThreshold;
@@ -322,6 +369,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // Invoke human verification for unusually fast or repeated correct answers.
         if (answeredTooFast || answeredTooOften) {
             verifying = true;
+            verifyingPlayer = player.getUniqueId();
+            verifyStartMillis = System.currentTimeMillis();
             Player p = player;
             String reason = answeredTooFast ? "答题速度过快" : "连续答对次数过多";
             Bukkit.broadcastMessage(messagePrefix() + " §c玩家 §f" + p.getName() + " §c"
@@ -343,6 +392,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     }
 
                     if (future instanceof java.util.concurrent.CompletableFuture) {
+                        java.util.UUID targetPlayer = p.getUniqueId();
+                        java.util.UUID targetQuestion = snapshot.id;
                         ((java.util.concurrent.CompletableFuture<?>) future).thenAccept(result -> {
                             try {
                                 // 通过比较枚举名称判断是否为 SUCCESS
@@ -355,71 +406,79 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                                     // fallback to toString
                                     ok = "SUCCESS".equals(result.toString());
                                 }
+                                final boolean passed = ok;
 
-                                if (ok) {
-                                    Bukkit.getScheduler().runTask(this, () -> {
+                                Bukkit.getScheduler().runTask(this, () -> {
+                                    // 若已超时兜底/题目轮换，直接丢弃过期回调
+                                    if (!verifying || !targetPlayer.equals(verifyingPlayer)) return;
+                                    Question cur = currentQuestion;
+                                    if (cur == null || cur.id == null || !cur.id.equals(targetQuestion)) return;
+
+                                    if (passed) {
                                         if (!p.isOnline()) {
-                                            verifying = false;
-                                            correctAnswerCounts.remove(p.getUniqueId());
-                                            currentQuestion = null;
+                                            resetStreak(targetPlayer);
+                                            clearQuestionState();
                                             return;
                                         }
-                                        verifying = false;
-                                        correctAnswerCounts.remove(p.getUniqueId());
+                                        resetStreak(targetPlayer);
+                                        clearQuestionState();
                                         awardWinner(p);
-                                        currentQuestion = null;
-                                    });
-                                } else {
-                                    Bukkit.getScheduler().runTask(this, () -> {
-                                        verifying = false;
-                                        correctAnswerCounts.remove(p.getUniqueId());
-                                        currentQuestion = null;
+                                    } else {
+                                        resetStreak(targetPlayer);
+                                        clearQuestionState();
                                         Bukkit.broadcastMessage(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
                                         p.kickPlayer("未通过人机验证");
-                                    });
-                                }
+                                    }
+                                });
                             } catch (Throwable t) {
                                 getLogger().log(Level.SEVERE, "处理人机验证结果时出错", t);
                                 Bukkit.getScheduler().runTask(this, () -> {
-                                    verifying = false;
-                                    correctAnswerCounts.remove(p.getUniqueId());
-                                    currentQuestion = null;
+                                    resetStreak(p.getUniqueId());
+                                    clearQuestionState();
                                 });
                             }
                         });
                     } else {
                         getLogger().warning("HumanVerifyApi.requestVerification 未返回 CompletableFuture 或返回 null，验证失败，不发放奖励");
-                        verifying = false;
-                        correctAnswerCounts.remove(p.getUniqueId());
-                        currentQuestion = null;
+                        resetStreak(p.getUniqueId());
+                        clearQuestionState();
                     }
                 } else {
                     getLogger().warning("未能通过 ServicesManager 加载 HumanVerifyApi，验证失败，不发放奖励。");
-                    verifying = false;
-                    correctAnswerCounts.remove(p.getUniqueId());
-                    currentQuestion = null;
+                    resetStreak(p.getUniqueId());
+                    clearQuestionState();
                 }
             } catch (ClassNotFoundException cnf) {
                 getLogger().warning("HumanVerifyApi 类未找到，无法执行人机验证。请确认 HumanVerify 已安装并先于本插件加载。");
-                verifying = false;
-                correctAnswerCounts.remove(p.getUniqueId());
-                currentQuestion = null;
+                resetStreak(p.getUniqueId());
+                clearQuestionState();
             } catch (Throwable t) {
                 getLogger().log(Level.SEVERE, "调用人机验证 API 时出错，验证失败，不发放奖励", t);
-                verifying = false;
-                correctAnswerCounts.remove(p.getUniqueId());
-                currentQuestion = null;
+                resetStreak(p.getUniqueId());
+                clearQuestionState();
             }
 
             return;
         }
 
         // Normal awarding
+        resetStreak(player.getUniqueId());
+        clearQuestionState();
         awardWinner(player);
-        currentQuestion = null;
+    }
+
+    /** 重置某玩家的连击计数。 */
+    private void resetStreak(java.util.UUID uuid) {
+        correctAnswerCounts.remove(uuid);
+        lastCorrectTimes.remove(uuid);
     }
 
     private void awardWinner(Player winner) {
+        // 无 Vault 时降级为纯公告模式，不暂停出题
+        if (!economyAvailable) {
+            Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（未安装 Vault，本轮无货币奖励）");
+            return;
+        }
         // Check payer balance
         double payerBal = getBalanceOf(payerDisplay);
         if (payerBal < rewardAmount) {
@@ -660,14 +719,19 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     startTask();
                     sender.sendMessage("§a已重载配置(base.yml 与 questions.yml)");
                     return true;
-                case "status":
+                case "status": {
                     sender.sendMessage("§6LetMeAsk 状态:");
                     sender.sendMessage(" 自动出题: " + (tickerTask != null ? "§a运行中" : "§c已停止"));
                     sender.sendMessage(" 当前题目: " + (currentQuestion != null ? currentQuestion.question : "无"));
                     sender.sendMessage(" 暂停(余额不足): " + (paused ? "§c是" : "§a否"));
                     sender.sendMessage(" 人机验证锁定: " + (verifying ? "§c是" : "§a否"));
-                    sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format("%.2f", getBalanceOf(payerDisplay)) + ")");
+                    if (economyAvailable) {
+                        sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format("%.2f", getBalanceOf(payerDisplay)) + ")");
+                    } else {
+                        sender.sendMessage(" 经济系统: §e未检测到 Vault（纯公告模式，无货币奖励）");
+                    }
                     return true;
+                }
                 default:
                     sender.sendMessage("§c未知子命令: " + sub);
                     return true;
@@ -699,6 +763,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         final String question;
         final String answer;
         volatile long postTime;
+        volatile java.util.UUID id;
 
         Question(String q, String a) {
             this.question = q;

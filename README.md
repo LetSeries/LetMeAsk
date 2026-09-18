@@ -24,10 +24,10 @@
 
 ## 安装
 
-1. 下载 `QuizPlugin-1.0.0.jar`
+1. 下载 `LetMeAsk-1.1.0.jar`
 2. 将 JAR 文件放入服务器 `plugins/` 目录
-3. 重启服务器或执行 `/reload`
-4. 编辑 `plugins/QuizPlugin/base.yml` 和 `questions.yml` 进行配置
+3. 重启服务器
+4. 编辑 `plugins/LetMeAsk/base.yml` 和 `questions.yml` 进行配置
 
 ## 命令
 
@@ -56,13 +56,19 @@ question-interval-seconds: 60
 # 答题超时时间（秒），超时后公布答案并出下一题（0=禁用）
 question-timeout-seconds: 30
 
-# 回答速度阈值（秒），过快触发人机验证
+# 回答用时阈值（秒，支持小数），过快触发人机验证
 anti-bot-threshold-seconds: 1
 
 # 连续答对次数阈值，达到触发人机验证（0=禁用）
 anti-bot-correct-answer-threshold: 3
 
-# 答案模糊匹配阈值（0-1，越高越严格）
+# 连击统计时间窗口（秒），超时未答对则连击清零
+anti-bot-streak-window-seconds: 300
+
+# 人机验证超时（秒），回调长时间未返回时自动解锁并作废本轮
+verify-timeout-seconds: 120
+
+# 答案模糊匹配阈值（0-1，越高越严格；1.0=精确匹配）
 fuzzy-similarity-threshold: 0.75
 
 # 消息前缀
