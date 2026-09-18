@@ -10,6 +10,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
@@ -79,7 +80,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         saveResource("questions.yml", false);
 
         // load configuration files
-        loadConfigValues();
+        if (!loadConfigValues()) {
+            getLogger().severe("启动时题库为空，禁用插件。请在 questions.yml 中添加题目后重启。");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
 
         economyAvailable = setupEconomy();
         if (!economyAvailable) {
@@ -107,7 +112,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         getLogger().info("QuizPlugin disabled");
     }
 
-    private void loadConfigValues() {
+    /**
+     * 加载配置。题库解析到临时列表：新题库为空则保留旧题库并返回 false，
+     * 调用方据此决定是禁用插件（启动时）还是报错但继续运行（reload 时）。
+     */
+    private boolean loadConfigValues() {
         // load base and questions from their own files
         baseFile = new File(getDataFolder(), "base.yml");
         questionsFile = new File(getDataFolder(), "questions.yml");
@@ -134,28 +143,59 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         resolvePayer(payerName);
 
         List<String> raw = questionsCfg.getStringList("questions");
+        boolean usingFallback = false;
         if (raw == null || raw.isEmpty()) {
-            raw = Arrays.asList(
-                    "中国首都=北京",
-                    "2+2=4",
-                    "香蕉是什么颜色=黄色"
-            );
-            getLogger().warning("questions.yml 中没有题目，使用内置示例题目。请在 questions.yml 中配置 questions 字段（格式：题目=答案）");
-        }
-
-        questions.clear();
-        for (String line : raw) {
-            String[] parts = line.split("=", 2);
-            if (parts.length < 2) parts = line.split(":", 2);
-            if (parts.length >= 2) {
-                questions.add(new Question(parts[0].trim(), parts[1].trim()));
+            if (questions.isEmpty()) {
+                // 首次启动且无题库：用内置示例兜底
+                raw = Arrays.asList(
+                        "中国首都=北京",
+                        "2+2=4",
+                        "香蕉是什么颜色=黄色"
+                );
+                usingFallback = true;
+                getLogger().warning("questions.yml 中没有题目，使用内置示例题目。请在 questions.yml 中配置 questions 字段（格式：题目=答案）");
+            } else {
+                // reload 时新题库为空：保留旧题库，不中断运行
+                getLogger().warning("questions.yml 中没有可用题目，已保留旧题库（" + questions.size() + " 题）。请检查配置后重新 reload。");
+                return false;
             }
         }
 
-        if (questions.isEmpty()) {
-            getLogger().severe("没有可用题目，插件无法正常出题。请在 questions.yml 中添加题目。禁用插件。");
-            getServer().getPluginManager().disablePlugin(this);
+        List<Question> parsed = parseQuestions(raw);
+        if (parsed.isEmpty()) {
+            if (questions.isEmpty()) {
+                getLogger().severe("没有可用题目，插件无法正常出题。请在 questions.yml 中添加题目。");
+                return false;
+            }
+            getLogger().warning("新题库解析后为空，已保留旧题库（" + questions.size() + " 题）。");
+            return false;
         }
+
+        questions.clear();
+        questions.addAll(parsed);
+        return !usingFallback || !questions.isEmpty();
+    }
+
+    /** 解析 "题目=答案1|答案2" 行，非法行跳过。 */
+    private List<Question> parseQuestions(List<String> raw) {
+        List<Question> parsed = new ArrayList<>();
+        for (String line : raw) {
+            if (line == null) continue;
+            String[] parts = line.split("=", 2);
+            if (parts.length < 2) parts = line.split(":", 2);
+            if (parts.length < 2) continue;
+            String q = parts[0].trim();
+            String a = parts[1].trim();
+            if (q.isEmpty() || a.isEmpty()) continue;
+            List<String> answers = new ArrayList<>();
+            for (String alt : a.split("\\|")) {
+                String t = alt.trim();
+                if (!t.isEmpty()) answers.add(t);
+            }
+            if (answers.isEmpty()) continue;
+            parsed.add(new Question(q, answers));
+        }
+        return parsed;
     }
 
     private void startTask() {
@@ -218,6 +258,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         payerDisplay = payerOffline.getName() != null ? payerOffline.getName() : payer;
     }
 
+    /** 判断答对者是否为出资人（UUID 优先，其次名字忽略大小写比对）。 */
+    private boolean isPayer(Player player) {
+        if (player == null) return false;
+        if (payerIsServer) return false; // Server/Console 账户不可能是真实玩家
+        if (payerOffline != null && player.getUniqueId().equals(payerOffline.getUniqueId())) return true;
+        String name = player.getName();
+        return name != null && payerDisplay != null && name.equalsIgnoreCase(payerDisplay);
+    }
+
     private void stopTask() {
         if (tickerTask != null && !tickerTask.isCancelled()) {
             tickerTask.cancel();
@@ -233,11 +282,33 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     }
 
     private void publishQuestion() {
-        Question q = questions.get(random.nextInt(questions.size()));
+        Question q = pickQuestionAvoidRepeat();
         q.postTime = System.currentTimeMillis();
         q.id = java.util.UUID.randomUUID();
         currentQuestion = q;
         Bukkit.broadcastMessage(messagePrefix() + " §f新题目: §f" + q.question);
+    }
+
+    /** 题库多于 1 题时保证连续两题不同，避免刚答完又出同一题。 */
+    private Question pickQuestionAvoidRepeat() {
+        if (questions.size() <= 1) return questions.get(random.nextInt(questions.size()));
+        String last = currentQuestion == null ? null : currentQuestion.question;
+        Question q;
+        int guard = 0;
+        do {
+            q = questions.get(random.nextInt(questions.size()));
+            guard++;
+        } while (last != null && last.equals(q.question) && guard < 10);
+        return q;
+    }
+
+    /** 任一候选答案匹配即算答对。 */
+    private boolean matchesAny(String provided, List<String> answers) {
+        if (answers == null) return false;
+        for (String answer : answers) {
+            if (matches(provided, answer)) return true;
+        }
+        return false;
     }
 
     private boolean matches(String provided, String answer) {
@@ -305,7 +376,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (questionTimeoutSeconds > 0) {
                 long elapsedMillis = System.currentTimeMillis() - currentQuestion.postTime;
                 if (elapsedMillis >= questionTimeoutSeconds * 1000L) {
-                    Bukkit.broadcastMessage(messagePrefix() + " §c无人答对！答案是: §f" + currentQuestion.answer);
+                    Bukkit.broadcastMessage(messagePrefix() + " §c无人答对！答案是: §f" + currentQuestion.displayAnswer());
                     correctAnswerCounts.clear();
                     lastCorrectTimes.clear();
                     currentQuestion = null;
@@ -330,7 +401,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         verifyStartMillis = 0L;
     }
 
-    @EventHandler
+    @EventHandler(ignoreCancelled = true)
     public void onPlayerChat(AsyncPlayerChatEvent event) {
         Question snapshot = currentQuestion;
         if (snapshot == null || verifying) return;
@@ -338,10 +409,16 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         String msg = event.getMessage().trim();
         Player player = event.getPlayer();
 
-        if (matches(msg, snapshot.answer)) {
+        if (matchesAny(msg, snapshot.answers)) {
             // 切主线程发奖，携带题目 id：若题目已轮换/作废则拒绝，防止旧题答案领走新题奖励
             Bukkit.getScheduler().runTask(this, () -> handleCorrectAnswer(player, snapshot.id));
         }
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        // 玩家离线即清理连击记录，防止长期在线服 Map 无限增长
+        resetStreak(event.getPlayer().getUniqueId());
     }
 
     private synchronized void handleCorrectAnswer(Player player, java.util.UUID questionId) {
@@ -477,6 +554,16 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // 无 Vault 时降级为纯公告模式，不暂停出题
         if (!economyAvailable) {
             Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（未安装 Vault，本轮无货币奖励）");
+            return;
+        }
+        // 奖励为 0：跳过全部转账调用，直接公告
+        if (rewardAmount <= 0.0) {
+            Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！");
+            return;
+        }
+        // 答对者就是出资人：左手倒右手，跳过转账
+        if (isPayer(winner)) {
+            Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（出资人自答，无需转账）");
             return;
         }
         // Check payer balance
@@ -713,12 +800,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     else sender.sendMessage("§c无法发布新题目（已有题目/正在验证/已暂停）。使用 /letmeask question force 可强制发布");
                     return true;
                 }
-                case "reload":
-                    loadConfigValues();
+                case "reload": {
+                    boolean ok = loadConfigValues();
                     // restart scheduler to pick up interval changes
                     startTask();
-                    sender.sendMessage("§a已重载配置(base.yml 与 questions.yml)");
+                    if (ok) sender.sendMessage("§a已重载配置(base.yml 与 questions.yml)");
+                    else sender.sendMessage("§e配置已重载，但新题库为空，已保留旧题库继续运行");
                     return true;
+                }
                 case "status": {
                     sender.sendMessage("§6LetMeAsk 状态:");
                     sender.sendMessage(" 自动出题: " + (tickerTask != null ? "§a运行中" : "§c已停止"));
@@ -758,16 +847,21 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
     }
 
-    // Simple question holder
+    // Simple question holder (supports multiple accepted answers)
     private static class Question {
         final String question;
-        final String answer;
+        final List<String> answers; // 任一匹配即算答对
         volatile long postTime;
         volatile java.util.UUID id;
 
-        Question(String q, String a) {
+        Question(String q, List<String> as) {
             this.question = q;
-            this.answer = a;
+            this.answers = Collections.unmodifiableList(new ArrayList<>(as));
+        }
+
+        /** 公布答案时展示的首选答案。 */
+        String displayAnswer() {
+            return answers.isEmpty() ? "" : answers.get(0);
         }
     }
 }
