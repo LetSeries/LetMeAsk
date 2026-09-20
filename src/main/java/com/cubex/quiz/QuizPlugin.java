@@ -42,6 +42,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile boolean verifying = false; // question locked while human verification pending
     private volatile java.util.UUID verifyingPlayer = null;
     private volatile long verifyStartMillis = 0L;
+    private volatile long verifyEpoch = 0L; // 验证轮次：reload/force/超时解锁时自增，旧回调直接丢弃
     private volatile long nextPostAtMillis = 0L; // when the next question may be posted
     private volatile boolean economyAvailable = false;
 
@@ -79,6 +80,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private FileConfiguration statsCfg;
     private final Map<String, Integer> totalCorrect = new HashMap<>();
     private final Map<String, Double> totalEarned = new HashMap<>();
+    private final Set<String> statsDirty = new HashSet<>(); // 自上次落盘后有变更的玩家 key
     private volatile long totalAsked = 0L;
     private volatile long totalAnswered = 0L;
 
@@ -113,13 +115,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         startTask();
 
         loadStats();
-        // 统计每 5 分钟落盘一次，避免服崩丢失
+        // 统计落盘：30 秒增量写（只写有变更的玩家），每 10 次做一次全量（约 5 分钟）
         statsSaveTask = new BukkitRunnable() {
+            private int runs = 0;
             @Override
             public void run() {
-                saveStats();
+                saveStats(++runs % 10 != 0);
             }
-        }.runTaskTimerAsynchronously(this, 6000L, 6000L);
+        }.runTaskTimerAsynchronously(this, 600L, 600L);
 
         getLogger().info("QuizPlugin enabled");
     }
@@ -152,21 +155,41 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         totalAnswered = statsCfg.getLong("total-answered", 0L);
     }
 
-    /** 同步写回 stats.yml（调用方注意线程：定时任务走异步，onDisable 走主线程）。 */
-    private synchronized void saveStats() {
+    /**
+     * 写回 stats.yml。incremental=true 时只写 dirty 玩家+累计计数（30s 高频任务用），
+     * false 时全量写回（5 分钟任务与关服时用）。
+     * 调用方注意线程：定时任务走异步，onDisable 走主线程。
+     */
+    private synchronized void saveStats(boolean incremental) {
         if (statsCfg == null || statsFile == null) return;
         try {
             statsCfg.set("total-asked", totalAsked);
             statsCfg.set("total-answered", totalAnswered);
-            for (Map.Entry<String, Integer> e : totalCorrect.entrySet()) {
-                String key = "players." + e.getKey();
-                statsCfg.set(key + ".correct", e.getValue());
-                statsCfg.set(key + ".earned", totalEarned.getOrDefault(e.getKey(), 0.0));
+            if (incremental) {
+                if (statsDirty.isEmpty()) return; // 无变更时连文件都不碰
+                for (String uuid : statsDirty) {
+                    String key = "players." + uuid;
+                    statsCfg.set(key + ".correct", totalCorrect.getOrDefault(uuid, 0));
+                    statsCfg.set(key + ".earned", totalEarned.getOrDefault(uuid, 0.0));
+                }
+                statsDirty.clear();
+            } else {
+                for (Map.Entry<String, Integer> e : totalCorrect.entrySet()) {
+                    String key = "players." + e.getKey();
+                    statsCfg.set(key + ".correct", e.getValue());
+                    statsCfg.set(key + ".earned", totalEarned.getOrDefault(e.getKey(), 0.0));
+                }
+                statsDirty.clear();
             }
             statsCfg.save(statsFile);
         } catch (Exception ex) {
             getLogger().log(Level.WARNING, "保存 stats.yml 失败", ex);
         }
+    }
+
+    /** 全量保存（关服与 5 分钟任务用）。 */
+    private void saveStats() {
+        saveStats(false);
     }
 
     /** 记录一次答对：累计次数与实发金额（0 奖励/自答/无 Vault 时金额为 0 也计数）。 */
@@ -175,6 +198,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         totalCorrect.merge(key, 1, Integer::sum);
         if (earned > 0.0) totalEarned.merge(key, earned, Double::sum);
         else totalEarned.putIfAbsent(key, 0.0);
+        statsDirty.add(key);
         totalAnswered++;
     }
 
@@ -516,12 +540,13 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
     }
 
-    /** 清理本轮题目与验证状态（验证通过/失败/超时统一入口）。 */
+    /** 清理本轮题目与验证状态（验证通过/失败/超时统一入口）。epoch 自增使旧回调失效。 */
     private void clearQuestionState() {
         currentQuestion = null;
         verifying = false;
         verifyingPlayer = null;
         verifyStartMillis = 0L;
+        verifyEpoch++;
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -597,6 +622,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     if (future instanceof java.util.concurrent.CompletableFuture) {
                         java.util.UUID targetPlayer = p.getUniqueId();
                         java.util.UUID targetQuestion = snapshot.id;
+                        long targetEpoch = verifyEpoch;
                         ((java.util.concurrent.CompletableFuture<?>) future).thenAccept(result -> {
                             try {
                                 // 通过比较枚举名称判断是否为 SUCCESS
@@ -612,7 +638,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                                 final boolean passed = ok;
 
                                 Bukkit.getScheduler().runTask(this, () -> {
-                                    // 若已超时兜底/题目轮换，直接丢弃过期回调
+                                    // 若已超时兜底/题目轮换/reload/force，直接丢弃过期回调
+                                    if (targetEpoch != verifyEpoch) return;
                                     if (!verifying || !targetPlayer.equals(verifyingPlayer)) return;
                                     Question cur = currentQuestion;
                                     if (cur == null || cur.id == null || !cur.id.equals(targetQuestion)) return;
@@ -957,6 +984,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 }
                 case "reload": {
                     boolean ok = loadConfigValues();
+                    // 重载时若正在验证：解锁并作废本轮，否则锁会一直占到验证超时
+                    if (verifying) {
+                        if (verifyingPlayer != null) resetStreak(verifyingPlayer);
+                        clearQuestionState();
+                        sender.sendMessage("§e重载时存在未完成的验证，已作废本轮题目");
+                    }
                     // restart scheduler to pick up interval changes
                     startTask();
                     if (ok) sender.sendMessage("§a已重载配置(base.yml 与 questions.yml)");
