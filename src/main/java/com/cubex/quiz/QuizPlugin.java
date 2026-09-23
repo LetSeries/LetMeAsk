@@ -81,6 +81,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private final Map<String, Integer> totalCorrect = new HashMap<>();
     private final Map<String, Double> totalEarned = new HashMap<>();
     private final Set<String> statsDirty = new HashSet<>(); // 自上次落盘后有变更的玩家 key
+    private final Map<String, String> nameCache = new HashMap<>(); // UUID 字符串 -> 最后已知玩家名（top 榜免查）
     private volatile long totalAsked = 0L;
     private volatile long totalAnswered = 0L;
 
@@ -144,11 +145,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         statsCfg = YamlConfiguration.loadConfiguration(statsFile);
         totalCorrect.clear();
         totalEarned.clear();
+        nameCache.clear();
         org.bukkit.configuration.ConfigurationSection players = statsCfg.getConfigurationSection("players");
         if (players != null) {
             for (String key : players.getKeys(false)) {
                 totalCorrect.put(key, players.getInt(key + ".correct", 0));
                 totalEarned.put(key, players.getDouble(key + ".earned", 0.0));
+                String n = players.getString(key + ".name");
+                if (n != null && !n.isEmpty()) nameCache.put(key, n);
             }
         }
         totalAsked = statsCfg.getLong("total-asked", 0L);
@@ -171,6 +175,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     String key = "players." + uuid;
                     statsCfg.set(key + ".correct", totalCorrect.getOrDefault(uuid, 0));
                     statsCfg.set(key + ".earned", totalEarned.getOrDefault(uuid, 0.0));
+                    String n = nameCache.get(uuid);
+                    if (n != null) statsCfg.set(key + ".name", n);
                 }
                 statsDirty.clear();
             } else {
@@ -178,6 +184,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     String key = "players." + e.getKey();
                     statsCfg.set(key + ".correct", e.getValue());
                     statsCfg.set(key + ".earned", totalEarned.getOrDefault(e.getKey(), 0.0));
+                    String n = nameCache.get(e.getKey());
+                    if (n != null) statsCfg.set(key + ".name", n);
                 }
                 statsDirty.clear();
             }
@@ -198,8 +206,26 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         totalCorrect.merge(key, 1, Integer::sum);
         if (earned > 0.0) totalEarned.merge(key, earned, Double::sum);
         else totalEarned.putIfAbsent(key, 0.0);
+        if (player.getName() != null) nameCache.put(key, player.getName());
         statsDirty.add(key);
         totalAnswered++;
+    }
+
+    /**
+     * UUID 反查最后已知玩家名：先读内存缓存，未命中再查 Bukkit（UUID 版走内存映射，不碰磁盘）。
+     * 仍无则回退显示 UUID 前 8 位。
+     */
+    private String displayNameOf(String uuidKey) {
+        String cached = nameCache.get(uuidKey);
+        if (cached != null) return cached;
+        try {
+            org.bukkit.OfflinePlayer off = Bukkit.getOfflinePlayer(java.util.UUID.fromString(uuidKey));
+            if (off.getName() != null) {
+                nameCache.put(uuidKey, off.getName());
+                return off.getName();
+            }
+        } catch (IllegalArgumentException ignored) {}
+        return uuidKey.length() > 8 ? uuidKey.substring(0, 8) : uuidKey;
     }
 
 
@@ -339,6 +365,13 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private String messagePrefix() {
         String prefix = baseCfg == null ? "&6[教育部]" : baseCfg.getString("messages.prefix", "&6[教育部]");
         return prefix.replace('&', '§');
+    }
+
+    /** 可配置消息：读 messages.<key>，缺失用默认值；支持 & 颜色码与 {arg} 占位。 */
+    private String msg(String key, String def, String arg) {
+        String s = baseCfg == null ? def : baseCfg.getString("messages." + key, def);
+        if (arg != null) s = s.replace("{arg}", arg);
+        return s.replace('&', '§');
     }
 
     private void resolvePayer(String payer) {
@@ -1022,8 +1055,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (name == null || name.isEmpty()) {
                 return (sender instanceof Player) ? (Player) sender : null;
             }
-            OfflinePlayer off = Bukkit.getOfflinePlayer(name);
-            // Bukkit#getOfflinePlayer(name) 对从未进服的名字也会返回占位对象，用是否玩过来过滤
+            // 先走缓存（在线/近期离线玩家命中，不碰磁盘）；未命中再走 getOfflinePlayer
+            OfflinePlayer off = Bukkit.getOfflinePlayerIfCached(name);
+            if (off == null) off = Bukkit.getOfflinePlayer(name);
+            // getOfflinePlayer(name) 对从未进服的名字也会返回占位对象，用是否玩过来过滤
             if (!off.hasPlayedBefore() && !off.isOnline()) return null;
             return off;
         }
@@ -1031,8 +1066,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         private void sendStats(CommandSender sender, String nameArg) {
             OfflinePlayer target = resolveStatsTarget(sender, nameArg);
             if (target == null) {
-                if (nameArg == null) sender.sendMessage("§c控制台请指定玩家名：/letmeask stats <玩家名>");
-                else sender.sendMessage("§c找不到玩家: " + nameArg);
+                if (nameArg == null) sender.sendMessage(msg("console-need-name", "&c控制台请指定玩家名：/letmeask stats <玩家名>", null));
+                else sender.sendMessage(msg("player-not-found", "&c找不到玩家: {arg}", nameArg));
                 return;
             }
             String key = target.getUniqueId().toString();
@@ -1049,25 +1084,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 try {
                     count = Math.min(20, Math.max(1, Integer.parseInt(countArg)));
                 } catch (NumberFormatException ignored) {
-                    sender.sendMessage("§c数量参数无效，使用默认值 10");
+                    sender.sendMessage(msg("invalid-count", "&c数量参数无效，使用默认值 10", null));
                 }
             }
             List<Map.Entry<String, Integer>> sorted = new ArrayList<>(totalCorrect.entrySet());
             sorted.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
             if (sorted.isEmpty()) {
-                sender.sendMessage("§e暂无答题记录");
+                sender.sendMessage(msg("no-records", "&e暂无答题记录", null));
                 return;
             }
             sender.sendMessage("§6答题排行榜 §7(前 " + Math.min(count, sorted.size()) + " 名):");
             int rank = 0;
             for (Map.Entry<String, Integer> e : sorted) {
                 if (++rank > count) break;
-                String name = e.getKey();
-                try {
-                    OfflinePlayer off = Bukkit.getOfflinePlayer(java.util.UUID.fromString(e.getKey()));
-                    if (off.getName() != null) name = off.getName();
-                } catch (IllegalArgumentException ignored) {}
-                sender.sendMessage(" §e" + rank + ". §f" + name + " §7答对 §f" + e.getValue()
+                sender.sendMessage(" §e" + rank + ". §f" + displayNameOf(e.getKey()) + " §7答对 §f" + e.getValue()
                         + " §7奖金 §e" + String.format("%.2f", totalEarned.getOrDefault(e.getKey(), 0.0)));
             }
         }
