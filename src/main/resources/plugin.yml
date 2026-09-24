@@ -12,8 +12,8 @@ softdepend:
 
 commands:
   letmeask:
-    description: "答题活动（查询: top|stats|status；管理: start|stop|question|reload）"
-    usage: "/letmeask <top|stats|status|start|stop|question|reload>"
+    description: "答题活动（查询: help|top|stats|status；管理: start|stop|question|reload）"
+    usage: "/letmeask <help|top|stats|status|start|stop|question|reload>"
     permission: letmeask.use
 
 permissions:

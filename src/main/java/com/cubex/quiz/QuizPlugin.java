@@ -976,20 +976,33 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
             if (args.length == 0) {
-                sender.sendMessage("§6LetMeAsk 指令： /letmeask top|stats|status（查询） start|stop|question [force]|reload（管理）");
+                sendHelp(sender);
                 return true;
             }
             String sub = args[0].toLowerCase(Locale.ROOT);
             // 查询类子命令全员可用
             switch (sub) {
+                case "help":
+                case "?":
+                    sendHelp(sender);
+                    return true;
                 case "top":
                     sendTop(sender, args.length > 1 ? args[1] : null);
                     return true;
                 case "stats":
                     sendStats(sender, args.length > 1 ? args[1] : null);
                     return true;
+                case "status":
+                    sendStatus(sender);
+                    return true;
             }
-            // 管理类子命令需要权限
+            boolean adminCmd = sub.equals("start") || sub.equals("stop") || sub.equals("question")
+                    || sub.equals("q") || sub.equals("reload");
+            if (!adminCmd) {
+                sender.sendMessage("§c未知子命令: " + sub);
+                sendHelp(sender);
+                return true;
+            }
             if (!sender.hasPermission("letmeask.admin")) {
                 sender.sendMessage("§c你没有权限执行此命令 (letmeask.admin)");
                 return true;
@@ -1029,24 +1042,39 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     else sender.sendMessage("§e配置已重载，但新题库为空，已保留旧题库继续运行");
                     return true;
                 }
-                case "status": {
-                    sender.sendMessage("§6LetMeAsk 状态:");
-                    sender.sendMessage(" 自动出题: " + (tickerTask != null ? "§a运行中" : "§c已停止"));
-                    sender.sendMessage(" 题库数量: §f" + questions.size());
-                    sender.sendMessage(" 当前题目: " + (currentQuestion != null ? currentQuestion.question : "无"));
-                    sender.sendMessage(" 暂停(余额不足): " + (paused ? "§c是" : "§a否"));
-                    sender.sendMessage(" 人机验证锁定: " + (verifying ? "§c是" : "§a否"));
-                    sender.sendMessage(" 累计出题: §f" + totalAsked + " §7已答对: §f" + totalAnswered);
-                    if (economyAvailable) {
-                        sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format("%.2f", getBalanceOf(payerDisplay)) + ")");
-                    } else {
-                        sender.sendMessage(" 经济系统: §e未检测到 Vault（纯公告模式，无货币奖励）");
-                    }
-                    return true;
-                }
                 default:
-                    sender.sendMessage("§c未知子命令: " + sub);
                     return true;
+            }
+        }
+
+        private void sendHelp(CommandSender sender) {
+            sender.sendMessage("§6§m----------§r §6LetMeAsk 帮助 §6§m----------");
+            sender.sendMessage("§e/letmeask help §7- 显示此帮助");
+            sender.sendMessage("§e/letmeask top [数量] §7- 答题排行榜（默认 10，最多 20）");
+            sender.sendMessage("§e/letmeask stats [玩家] §7- 查看答题统计（默认自己）");
+            sender.sendMessage("§e/letmeask status §7- 查看插件状态");
+            if (sender.hasPermission("letmeask.admin")) {
+                sender.sendMessage("§6管理命令:");
+                sender.sendMessage("§e/letmeask start §7- 启动定时出题");
+                sender.sendMessage("§e/letmeask stop §7- 停止定时出题");
+                sender.sendMessage("§e/letmeask question [force] §7- 发布新题目（force 强制）");
+                sender.sendMessage("§e/letmeask reload §7- 重载配置");
+            }
+            sender.sendMessage("§6§m--------------------------------");
+        }
+
+        private void sendStatus(CommandSender sender) {
+            sender.sendMessage("§6LetMeAsk 状态:");
+            sender.sendMessage(" 自动出题: " + (tickerTask != null ? "§a运行中" : "§c已停止"));
+            sender.sendMessage(" 题库数量: §f" + questions.size());
+            sender.sendMessage(" 当前题目: " + (currentQuestion != null ? currentQuestion.question : "无"));
+            sender.sendMessage(" 暂停(余额不足): " + (paused ? "§c是" : "§a否"));
+            sender.sendMessage(" 人机验证锁定: " + (verifying ? "§c是" : "§a否"));
+            sender.sendMessage(" 累计出题: §f" + totalAsked + " §7已答对: §f" + totalAnswered);
+            if (economyAvailable) {
+                sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format("%.2f", getBalanceOf(payerDisplay)) + ")");
+            } else {
+                sender.sendMessage(" 经济系统: §e未检测到 Vault（纯公告模式，无货币奖励）");
             }
         }
 
@@ -1106,7 +1134,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
                 String prefix = args[0].toLowerCase(Locale.ROOT);
-                List<String> subs = new ArrayList<>(Arrays.asList("top", "stats", "status"));
+                List<String> subs = new ArrayList<>(Arrays.asList("help", "top", "stats", "status"));
                 if (sender.hasPermission("letmeask.admin")) {
                     subs.addAll(Arrays.asList("start", "stop", "question", "q", "reload"));
                 }
