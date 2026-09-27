@@ -56,6 +56,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private double antiBotThresholdSeconds;
     private int antiBotCorrectAnswerThreshold;
     private long antiBotStreakWindowSeconds;
+    private int antiBotChatHistoryCount;
+    private double antiBotChatMinIntervalSeconds;
     private long verifyTimeoutSeconds;
     private double fuzzySimilarityThreshold = 0.75; // default similarity threshold (0-1)
     private boolean celebrateEnabled = true;
@@ -82,6 +84,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private BukkitTask statsSaveTask;
     private final Map<java.util.UUID, Integer> correctAnswerCounts = new HashMap<>();
     private final Map<java.util.UUID, Long> lastCorrectTimes = new HashMap<>();
+    private final Map<java.util.UUID, ChatHistory> recentChatMessages = new HashMap<>();
 
     // 答题统计（持久化到 stats.yml，key 为玩家 UUID 字符串）
     private File statsFile;
@@ -271,6 +274,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         antiBotThresholdSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-threshold-seconds", 1.0));
         antiBotCorrectAnswerThreshold = Math.max(0, baseCfg.getInt("anti-bot-correct-answer-threshold", 3));
         antiBotStreakWindowSeconds = Math.max(0L, baseCfg.getLong("anti-bot-streak-window-seconds", 300L));
+        antiBotChatHistoryCount = Math.max(2, baseCfg.getInt("anti-bot-chat-history-count", 3));
+        antiBotChatMinIntervalSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-chat-min-interval-seconds", 0.5));
         verifyTimeoutSeconds = Math.max(10L, baseCfg.getLong("verify-timeout-seconds", 120L));
         fuzzySimilarityThreshold = Math.min(1.0, Math.max(0.0,
                 baseCfg.getDouble("fuzzy-similarity-threshold", fuzzySimilarityThreshold)));
@@ -478,6 +483,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         q.postTime = System.currentTimeMillis();
         q.id = java.util.UUID.randomUUID();
         currentQuestion = q;
+        synchronized (recentChatMessages) {
+            recentChatMessages.clear();
+        }
         totalAsked++;
         Bukkit.broadcastMessage(messagePrefix() + " §f新题目: §f" + q.question);
     }
@@ -576,7 +584,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             double bal = getBalanceOf(payerDisplay);
             if (bal >= rewardAmount) {
                 paused = false;
-                Bukkit.broadcastMessage(messagePrefix() + " §a资金已足额，恢复出题。当前余额: " + bal);
+                Bukkit.broadcastMessage(messagePrefix() + " §a资金已足额，恢复出题。当前余额: " + bal + "，预计还可以奖励" + (bal / rewardAmount) + "次。");
             } else {
                 return;
             }
@@ -601,7 +609,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     Bukkit.broadcastMessage(messagePrefix() + " §c无人答对！答案是: §f" + currentQuestion.displayAnswer());
                     correctAnswerCounts.clear();
                     lastCorrectTimes.clear();
-                    currentQuestion = null;
+                    clearQuestionState();
                     nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
                 }
             }
@@ -622,6 +630,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         verifyingPlayer = null;
         verifyStartMillis = 0L;
         verifyEpoch++;
+        synchronized (recentChatMessages) {
+            recentChatMessages.clear();
+        }
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -630,14 +641,18 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         if (snapshot == null || verifying) return;
 
         String msg = event.getMessage().trim();
+        String normalizedMsg = normalize(msg);
         Player player = event.getPlayer();
+        long messageTime = System.currentTimeMillis();
+        boolean correctAnswer = msg.length() <= 100 && matchesAny(normalizedMsg, snapshot.normalizedAnswers);
+        boolean chatTooFast = recordChatMessage(player.getUniqueId(), snapshot.id, messageTime, correctAnswer);
 
         // 超长刷屏消息直接拒绝，避免无意义的模糊匹配计算
         if (msg.length() > 100) return;
 
-        if (matchesAny(normalize(msg), snapshot.normalizedAnswers)) {
+        if (correctAnswer) {
             // 切主线程发奖，携带题目 id：若题目已轮换/作废则拒绝，防止旧题答案领走新题奖励
-            Bukkit.getScheduler().runTask(this, () -> handleCorrectAnswer(player, snapshot.id));
+            Bukkit.getScheduler().runTask(this, () -> handleCorrectAnswer(player, snapshot.id, chatTooFast));
         }
     }
 
@@ -647,10 +662,43 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         resetStreak(event.getPlayer().getUniqueId());
     }
 
-    private synchronized void handleCorrectAnswer(Player player, java.util.UUID questionId) {
+    private boolean recordChatMessage(java.util.UUID playerId, java.util.UUID questionId, long messageTime,
+                                      boolean correctAnswer) {
+        synchronized (recentChatMessages) {
+            ChatHistory history = recentChatMessages.get(playerId);
+            if (history == null || !history.questionId.equals(questionId)) {
+                history = new ChatHistory(questionId);
+                recentChatMessages.put(playerId, history);
+            }
+            history.timestamps.addLast(messageTime);
+            while (history.timestamps.size() > antiBotChatHistoryCount) {
+                history.timestamps.removeFirst();
+            }
+            if (!correctAnswer || antiBotChatMinIntervalSeconds <= 0.0 || history.timestamps.size() < 2) {
+                return false;
+            }
+            long minimumIntervalMillis = (long) (antiBotChatMinIntervalSeconds * 1000.0);
+            Long previous = null;
+            for (Long timestamp : history.timestamps) {
+                if (previous != null && timestamp - previous < minimumIntervalMillis) return true;
+                previous = timestamp;
+            }
+            return false;
+        }
+    }
+
+    private synchronized void handleCorrectAnswer(Player player, java.util.UUID questionId, boolean chatTooFast) {
         Question snapshot = currentQuestion;
         if (snapshot == null || verifying) return; // double-check
         if (snapshot.id == null || !snapshot.id.equals(questionId)) return; // 题目已轮换或作废
+
+        if (chatTooFast) {
+            resetStreak(player.getUniqueId());
+            clearQuestionState();
+            Bukkit.broadcastMessage(messagePrefix() + " §c玩家 §f" + player.getName() + " §c因聊天消息间隔过短被踢出服务器。");
+            player.kickPlayer("聊天消息间隔过短");
+            return;
+        }
 
         long now = System.currentTimeMillis();
         double deltaSecs = (now - snapshot.postTime) / 1000.0; // 浮点精度，避免 1.9s 被截断成 1s
@@ -776,6 +824,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private void resetStreak(java.util.UUID uuid) {
         correctAnswerCounts.remove(uuid);
         lastCorrectTimes.remove(uuid);
+        synchronized (recentChatMessages) {
+            recentChatMessages.remove(uuid);
+        }
     }
 
     /**
@@ -1261,6 +1312,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         /** 公布答案时展示的首选答案。 */
         String displayAnswer() {
             return answers.isEmpty() ? "" : answers.get(0);
+        }
+    }
+
+    private static class ChatHistory {
+        final java.util.UUID questionId;
+        final Deque<Long> timestamps = new ArrayDeque<>();
+
+        ChatHistory(java.util.UUID questionId) {
+            this.questionId = questionId;
         }
     }
 }
