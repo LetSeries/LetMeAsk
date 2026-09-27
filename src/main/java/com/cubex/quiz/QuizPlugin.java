@@ -32,6 +32,9 @@ import java.util.logging.Level;
 public class QuizPlugin extends JavaPlugin implements Listener {
     // Vault economy provider (kept as Object to avoid compile-time dependency on Vault API)
     private Object econ; // provider instance
+    // 缓存 Vault Economy 的 Class 与 Method：发奖一次最多触发 9 次反射查询，缓存后只剩 invoke
+    private Class<?> economyClass;
+    private final Map<String, Method> economyMethods = new HashMap<>();
 
     private final Random random = new Random();
 
@@ -248,6 +251,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         baseCfg = YamlConfiguration.loadConfiguration(baseFile);
         questionsCfg = YamlConfiguration.loadConfiguration(questionsFile);
+        cachedPrefix = null; // base.yml 已重载，前缀缓存失效
 
         payerName = baseCfg.getString("payer", "Server");
         rewardAmount = Math.max(0.0, baseCfg.getDouble("reward", 50.0));
@@ -365,9 +369,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }.runTaskTimer(this, 20L, 20L); // 1s 粒度，保证超时与验证兜底准时
     }
 
+    private volatile String cachedPrefix = null; // prefix 缓存：reload 时失效
+
     private String messagePrefix() {
+        String hit = cachedPrefix;
+        if (hit != null) return hit;
         String prefix = baseCfg == null ? "&6[教育部]" : baseCfg.getString("messages.prefix", "&6[教育部]");
-        return prefix.replace('&', '§');
+        hit = prefix.replace('&', '§');
+        cachedPrefix = hit;
+        return hit;
     }
 
     /** 可配置消息：读 messages.<key>，缺失用默认值；支持 & 颜色码与 {arg} 占位。 */
@@ -494,32 +504,48 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (b.isEmpty()) continue;
             if (providedNormalized.equals(b)) return true;
             if (fuzzySimilarityThreshold >= 1.0) continue; // 1.0 = 严格精确匹配
-            int dist = levenshtein(providedNormalized, b);
             int max = Math.max(providedNormalized.length(), b.length());
-            double sim = 1.0 - (double) dist / (double) max;
-            if (sim >= fuzzySimilarityThreshold) return true;
+            // sim >= threshold  <=>  dist <= max * (1 - threshold)，上界早退
+            int maxDist = (int) Math.floor(max * (1.0 - fuzzySimilarityThreshold));
+            int dist = levenshtein(providedNormalized, b, maxDist);
+            if (dist <= maxDist) return true;
         }
         return false;
     }
 
+    /** 预编译：String.replaceAll 每次都编译 Pattern，高频聊天路径下不可接受。 */
+    private static final java.util.regex.Pattern NON_ALNUM = java.util.regex.Pattern.compile("[^\\p{L}\\p{N}]+");
+
     private static String normalize(String s) {
         // Locale.ROOT：避免土耳其语等 locale 下 I/i 大小写转换异常
-        return s == null ? "" : s.replaceAll("[^\\p{L}\\p{N}]+", "").toLowerCase(Locale.ROOT);
+        return s == null ? "" : NON_ALNUM.matcher(s).replaceAll("").toLowerCase(Locale.ROOT);
     }
 
-    private int levenshtein(String s1, String s2) {
-        int[] prev = new int[s2.length() + 1];
-        int[] curr = new int[s2.length() + 1];
-        for (int j = 0; j <= s2.length(); j++) prev[j] = j;
-        for (int i = 1; i <= s1.length(); i++) {
+    /**
+     * 带上界的编辑距离：若中途已能确定距离超过 maxDist，直接返回 maxDist+1。
+     * 调用方只关心“是否达标”，超标的精确值无意义，早退省掉剩余 DP 计算。
+     */
+    private int levenshtein(String s1, String s2, int maxDist) {
+        int n = s1.length();
+        int m = s2.length();
+        if (Math.abs(n - m) > maxDist) return maxDist + 1; // 长度差本身就是下界
+        int[] prev = new int[m + 1];
+        int[] curr = new int[m + 1];
+        for (int j = 0; j <= m; j++) prev[j] = j;
+        for (int i = 1; i <= n; i++) {
             curr[0] = i;
-            for (int j = 1; j <= s2.length(); j++) {
+            int rowMin = curr[0];
+            for (int j = 1; j <= m; j++) {
                 int cost = s1.charAt(i - 1) == s2.charAt(j - 1) ? 0 : 1;
                 curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+                if (curr[j] < rowMin) rowMin = curr[j];
             }
-            System.arraycopy(curr, 0, prev, 0, prev.length);
+            if (rowMin > maxDist) return maxDist + 1; // 整行都超标，后续只会更大
+            int[] tmp = prev;
+            prev = curr;
+            curr = tmp;
         }
-        return prev[s2.length()];
+        return prev[m];
     }
 
     private final List<Question> questions = new ArrayList<>();
@@ -795,6 +821,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             Method getProvider = rsp.getClass().getMethod("getProvider");
             Object provider = getProvider.invoke(rsp);
             this.econ = provider;
+            this.economyClass = econClass;
+            this.economyMethods.clear();
             return this.econ != null;
         } catch (ClassNotFoundException cnf) {
             getLogger().warning("Vault API 不在类路径中，无法加载 Economy 接口");
@@ -808,7 +836,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     // Reflection helpers for interacting with economy provider without compile-time Vault dependency
     private double getBalanceOf(String who) {
         if (econ == null) return 0.0;
-            if (payerIsServer) {
+        if (payerIsServer) {
             Double balance = extractBalance(invokeEconomy("bankBalance", new Class<?>[]{String.class}, who));
             if (balance != null) return balance;
         }
@@ -896,11 +924,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     }
 
     private Object invokeEconomy(String methodName, Class<?>[] parameterTypes, Object... arguments) {
+        if (econ == null || economyClass == null) return null;
         try {
-            Class<?> economyInterface = Class.forName("net.milkbowl.vault.economy.Economy");
-            return economyInterface.getMethod(methodName, parameterTypes).invoke(econ, arguments);
-        } catch (NoSuchMethodException ignored) {
-            return null;
+            String cacheKey = methodName + Arrays.toString(parameterTypes);
+            Method m = economyMethods.get(cacheKey);
+            if (m == null && !economyMethods.containsKey(cacheKey)) {
+                try {
+                    m = economyClass.getMethod(methodName, parameterTypes);
+                } catch (NoSuchMethodException ignored) {
+                    m = null;
+                }
+                economyMethods.put(cacheKey, m); // null 也缓存：缺失的方法下次直接返回
+            }
+            if (m == null) return null;
+            return m.invoke(econ, arguments);
         } catch (Throwable t) {
             getLogger().log(Level.WARNING, "调用经济方法 " + methodName + " 时出错", t);
             return null;
