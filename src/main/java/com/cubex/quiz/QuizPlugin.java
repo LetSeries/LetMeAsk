@@ -20,7 +20,6 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import java.io.File;
 import java.lang.reflect.Method;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 
 /**
@@ -105,7 +104,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         getServer().getPluginManager().registerEvents(this, this);
 
-        // register command
+        // register command（别名 lma 在 plugin.yml 中声明）
         if (getCommand("letmeask") != null) {
             QuizCommand quizCommand = new QuizCommand();
             getCommand("letmeask").setExecutor(quizCommand);
@@ -200,8 +199,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         saveStats(false);
     }
 
-    /** 记录一次答对：累计次数与实发金额（0 奖励/自答/无 Vault 时金额为 0 也计数）。 */
-    private void recordCorrect(Player player, double earned) {
+    /**
+     * 记录一次答对：累计次数与实发金额（0 奖励/自答/无 Vault 时金额为 0 也计数）。
+     * synchronized：awardWinner 走主线程，saveStats 走异步定时任务，需与保存互斥。
+     */
+    private synchronized void recordCorrect(Player player, double earned) {
         String key = player.getUniqueId().toString();
         totalCorrect.merge(key, 1, Integer::sum);
         if (earned > 0.0) totalEarned.merge(key, earned, Double::sum);
@@ -214,8 +216,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     /**
      * UUID 反查最后已知玩家名：先读内存缓存，未命中再查 Bukkit（UUID 版走内存映射，不碰磁盘）。
      * 仍无则回退显示 UUID 前 8 位。
+     * synchronized：top 命令可能与 recordCorrect/saveStats 并发读写 nameCache。
      */
-    private String displayNameOf(String uuidKey) {
+    private synchronized String displayNameOf(String uuidKey) {
         String cached = nameCache.get(uuidKey);
         if (cached != null) return cached;
         try {
@@ -481,29 +484,25 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return questions.get(questions.size() - 1);
     }
 
-    /** 任一候选答案匹配即算答对。 */
-    private boolean matchesAny(String provided, List<String> answers) {
-        if (answers == null) return false;
-        for (String answer : answers) {
-            if (matches(provided, answer)) return true;
+    /**
+     * 任一候选答案匹配即算答对。normalizedAnswers 为出题时预归一化的答案，
+     * 聊天消息只归一化一次，避免每条消息重复归一化题库答案。
+     */
+    private boolean matchesAny(String providedNormalized, List<String> normalizedAnswers) {
+        if (providedNormalized == null || providedNormalized.isEmpty() || normalizedAnswers == null) return false;
+        for (String b : normalizedAnswers) {
+            if (b.isEmpty()) continue;
+            if (providedNormalized.equals(b)) return true;
+            if (fuzzySimilarityThreshold >= 1.0) continue; // 1.0 = 严格精确匹配
+            int dist = levenshtein(providedNormalized, b);
+            int max = Math.max(providedNormalized.length(), b.length());
+            double sim = 1.0 - (double) dist / (double) max;
+            if (sim >= fuzzySimilarityThreshold) return true;
         }
         return false;
     }
 
-    private boolean matches(String provided, String answer) {
-        if (provided == null || answer == null) return false;
-        String a = normalize(provided);
-        String b = normalize(answer);
-        if (a.isEmpty() || b.isEmpty()) return false;
-        if (a.equals(b)) return true;
-        if (fuzzySimilarityThreshold >= 1.0) return false; // 1.0 = 严格精确匹配
-        int dist = levenshtein(a, b);
-        int max = Math.max(a.length(), b.length());
-        double sim = 1.0 - (double) dist / (double) max;
-        return sim >= fuzzySimilarityThreshold;
-    }
-
-    private String normalize(String s) {
+    private static String normalize(String s) {
         // Locale.ROOT：避免土耳其语等 locale 下 I/i 大小写转换异常
         return s == null ? "" : s.replaceAll("[^\\p{L}\\p{N}]+", "").toLowerCase(Locale.ROOT);
     }
@@ -593,7 +592,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // 超长刷屏消息直接拒绝，避免无意义的模糊匹配计算
         if (msg.length() > 100) return;
 
-        if (matchesAny(msg, snapshot.answers)) {
+        if (matchesAny(normalize(msg), snapshot.normalizedAnswers)) {
             // 切主线程发奖，携带题目 id：若题目已轮换/作废则拒绝，防止旧题答案领走新题奖励
             Bukkit.getScheduler().runTask(this, () -> handleCorrectAnswer(player, snapshot.id));
         }
@@ -1042,9 +1041,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     else sender.sendMessage("§e配置已重载，但新题库为空，已保留旧题库继续运行");
                     return true;
                 }
-                default:
-                    return true;
             }
+            return true; // unreachable：adminCmd 已前置过滤，但保留以满足编译
         }
 
         private void sendHelp(CommandSender sender) {
@@ -1099,7 +1097,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 return;
             }
             String key = target.getUniqueId().toString();
-            String display = target.getName() != null ? target.getName() : key;
+            if (target.getName() != null) nameCache.put(key, target.getName()); // 顺手更新缓存
+            String display = displayNameOf(key);
             int correct = totalCorrect.getOrDefault(key, 0);
             double earned = totalEarned.getOrDefault(key, 0.0);
             sender.sendMessage("§6玩家 §f" + display + " §6的答题统计:");
@@ -1155,7 +1154,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     // Simple question holder (supports multiple accepted answers + weight)
     private static class Question {
         final String question;
-        final List<String> answers; // 任一匹配即算答对
+        final List<String> answers; // 任一匹配即算答对（原始文本，用于公布答案）
+        final List<String> normalizedAnswers; // 预归一化答案，判定用，避免每条聊天重复归一化
         final int weight; // 出题权重（>=1），越大越容易被抽中
         volatile long postTime;
         volatile java.util.UUID id;
@@ -1167,6 +1167,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         Question(String q, List<String> as, int w) {
             this.question = q;
             this.answers = Collections.unmodifiableList(new ArrayList<>(as));
+            List<String> norm = new ArrayList<>(as.size());
+            for (String a : as) norm.add(normalize(a));
+            this.normalizedAnswers = Collections.unmodifiableList(norm);
             this.weight = Math.max(1, w);
         }
 
