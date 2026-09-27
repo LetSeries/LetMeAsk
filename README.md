@@ -9,6 +9,7 @@
 - **经济系统集成**：支持 Vault 经济插件，自动扣款/发放奖励
 - **模糊匹配**：答案支持容错匹配（拼写相似度可配置）
 - **人机验证**：答题过快或连续答对过多时触发 HumanVerify 验证
+- **答对特效**：答对者收到 Title 标题，全服播放升级音效（均可在 `celebrate` 下配置开关）
 - **灵活配置**：支持玩家名、UUID、服务器账户、LittleSkin 等支付方式
 
 注意: 人机验证需要依赖[HumanVerify](https://github.com/FZAoao/HumanVerify)插件。如果没有它，人机验证功能将无法使用，但是基本功能不会影响。
@@ -75,6 +76,15 @@ verify-timeout-seconds: 120
 
 # 答案模糊匹配阈值（0-1，越高越严格；1.0=精确匹配）
 fuzzy-similarity-threshold: 0.75
+
+# 答对庆祝：Title 只发给答对者，音效全服可听（sound=none 关闭音效）
+celebrate:
+  enabled: true
+  title: "&6&l答对了！"
+  subtitle: "&e+{reward} 金币"
+  sound: ENTITY_PLAYER_LEVELUP
+  volume: 1.0
+  pitch: 1.0
 
 # 消息前缀
 messages:

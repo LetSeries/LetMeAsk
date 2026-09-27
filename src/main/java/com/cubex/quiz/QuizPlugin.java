@@ -58,6 +58,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private long antiBotStreakWindowSeconds;
     private long verifyTimeoutSeconds;
     private double fuzzySimilarityThreshold = 0.75; // default similarity threshold (0-1)
+    private boolean celebrateEnabled = true;
+    private String celebrateTitle = "§6§l答对了！";
+    private String celebrateSubtitle = "§e+{reward} 金币";
+    private String celebrateSound = "ENTITY_PLAYER_LEVELUP";
+    private float celebrateVolume = 1.0f;
+    private float celebratePitch = 1.0f;
 
     // resolved payer information (support UUID / OfflinePlayer / Server / LittleSkin via prefix)
     private org.bukkit.OfflinePlayer payerOffline = null;
@@ -234,6 +240,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return uuidKey.length() > 8 ? uuidKey.substring(0, 8) : uuidKey;
     }
 
+    /** 线程安全地缓存玩家名（sendStats 走命令线程，直接写 map 会与异步保存竞态）。 */
+    private synchronized void cacheName(String uuidKey, String name) {
+        if (uuidKey != null && name != null) nameCache.put(uuidKey, name);
+    }
+
 
 
     /**
@@ -263,6 +274,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         verifyTimeoutSeconds = Math.max(10L, baseCfg.getLong("verify-timeout-seconds", 120L));
         fuzzySimilarityThreshold = Math.min(1.0, Math.max(0.0,
                 baseCfg.getDouble("fuzzy-similarity-threshold", fuzzySimilarityThreshold)));
+        celebrateEnabled = baseCfg.getBoolean("celebrate.enabled", true);
+        celebrateTitle = baseCfg.getString("celebrate.title", "§6§l答对了！");
+        celebrateSubtitle = baseCfg.getString("celebrate.subtitle", "§e+{reward} 金币");
+        celebrateSound = baseCfg.getString("celebrate.sound", "ENTITY_PLAYER_LEVELUP");
+        celebrateVolume = (float) Math.max(0.0, baseCfg.getDouble("celebrate.volume", 1.0));
+        celebratePitch = (float) Math.max(0.0, baseCfg.getDouble("celebrate.pitch", 1.0));
 
         // resolve payer to a stable identifier (UUID/name/Server/LittleSkin)
         resolvePayer(payerName);
@@ -761,23 +778,53 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         lastCorrectTimes.remove(uuid);
     }
 
+    /**
+     * 答对庆祝：只给答对者发 Title（全服广播太扰民），音效全服可听。
+     * earned <= 0 时副标题不显示金额。
+     */
+    private void celebrate(Player winner, double earned) {
+        if (!celebrateEnabled) return;
+        try {
+            String sub = celebrateSubtitle.replace("{reward}", String.format("%.0f", earned));
+            if (earned <= 0.0) sub = "";
+            winner.sendTitle(celebrateTitle.replace('&', '§'), sub.replace('&', '§'));
+        } catch (Throwable t) {
+            getLogger().fine("发送 Title 失败: " + t.getMessage());
+        }
+        if (celebrateSound == null || celebrateSound.isEmpty() || "none".equalsIgnoreCase(celebrateSound)) return;
+        try {
+            org.bukkit.Sound sound = org.bukkit.Sound.valueOf(celebrateSound.toUpperCase(Locale.ROOT));
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                try {
+                    p.playSound(p.getLocation(), sound, celebrateVolume, celebratePitch);
+                } catch (Throwable ignored) {}
+            }
+        } catch (IllegalArgumentException e) {
+            getLogger().warning("celebrate.sound 配置无效: " + celebrateSound + "，已跳过音效");
+            celebrateSound = "none"; // 避免每题刷一次告警
+        }
+    }
+
     private void awardWinner(Player winner) {
         // 无 Vault 时降级为纯公告模式，不暂停出题
         if (!economyAvailable) {
             recordCorrect(winner, 0.0);
             Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（未安装 Vault，本轮无货币奖励）");
+            celebrate(winner, 0.0);
             return;
         }
         // 奖励为 0：跳过全部转账调用，直接公告
         if (rewardAmount <= 0.0) {
             recordCorrect(winner, 0.0);
             Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！");
+            celebrate(winner, 0.0);
             return;
         }
         // 答对者就是出资人：左手倒右手，跳过转账
         if (isPayer(winner)) {
             recordCorrect(winner, 0.0);
             Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（出资人自答，无需转账）");
+            celebrate(winner, 0.0);
             return;
         }
         // Check payer balance
@@ -809,6 +856,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         recordCorrect(winner, rewardAmount);
         Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题，获得 §e" + rewardAmount + " §a货币！");
+        celebrate(winner, rewardAmount);
     }
 
     private boolean setupEconomy() {
@@ -1134,7 +1182,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 return;
             }
             String key = target.getUniqueId().toString();
-            if (target.getName() != null) nameCache.put(key, target.getName()); // 顺手更新缓存
+            cacheName(key, target.getName()); // 顺手更新缓存（加锁，与异步保存互斥）
             String display = displayNameOf(key);
             int correct = totalCorrect.getOrDefault(key, 0);
             double earned = totalEarned.getOrDefault(key, 0.0);

@@ -26,6 +26,16 @@ verify-timeout-seconds: 120
 # 0-1，答案相似度阈值，越高越严格；1.0 = 严格精确匹配
 fuzzy-similarity-threshold: 0.75
 
+# 答对庆祝特效：只给答对者发 Title，音效全服可听
+# sound 为 Bukkit Sound 枚举名，设为 none 可关闭音效
+celebrate:
+  enabled: true
+  title: "&6&l答对了！"
+  subtitle: "&e+{reward} 金币"
+  sound: ENTITY_PLAYER_LEVELUP
+  volume: 1.0
+  pitch: 1.0
+
 # 消息前缀，支持 Bukkit 颜色代码（例如 &b[答题]）
 # 查询类提示消息也可在下方自定义（支持 & 颜色码，{arg} 为参数占位）
 messages:
