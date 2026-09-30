@@ -47,6 +47,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile long verifyEpoch = 0L; // 验证轮次：reload/force/超时解锁时自增，旧回调直接丢弃
     private volatile long nextPostAtMillis = 0L; // when the next question may be posted
     private volatile boolean economyAvailable = false;
+    private String economyProviderName = null;
+    private boolean economyBankSupport = true;
 
     // config values
     private String payerName;
@@ -112,6 +114,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         economyAvailable = setupEconomy();
         if (!economyAvailable) {
             getLogger().warning("未找到 Vault 经济插件：以“仅公告、无奖励”模式运行，安装 Vault 后请重启或重载插件");
+        } else {
+            getLogger().info("已连接经济后端: " + (economyProviderName != null ? economyProviderName : "未知"));
+            if (payerIsServer && !economyBankSupport) {
+                getLogger().warning("经济后端 " + (economyProviderName != null ? economyProviderName : "未知")
+                        + " 未实现银行账户 API，将按账户名 \"" + payerName + "\" 扣款。"
+                        + "请确保该账户存在且有余额，否则出题会因“资金不足”暂停；"
+                        + "XConomy 可在 config.yml 开启 non-player-account 并给该账户充值。");
+            }
         }
 
         getServer().getPluginManager().registerEvents(this, this);
@@ -920,9 +930,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             Method getProvider = rsp.getClass().getMethod("getProvider");
             Object provider = getProvider.invoke(rsp);
             this.econ = provider;
+            if (this.econ == null) return false;
             this.economyClass = econClass;
             this.economyMethods.clear();
-            return this.econ != null;
+            this.economyProviderName = readEconomyName();
+            this.economyBankSupport = readEconomyBankSupport();
+            return true;
         } catch (ClassNotFoundException cnf) {
             getLogger().warning("Vault API 不在类路径中，无法加载 Economy 接口");
             return false;
@@ -932,10 +945,29 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
     }
 
+    private String readEconomyName() {
+        try {
+            Object r = invokeEconomy("getName", new Class<?>[0]);
+            if (r instanceof String) {
+                String s = ((String) r).trim();
+                if (!s.isEmpty()) return s;
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private boolean readEconomyBankSupport() {
+        try {
+            Object r = invokeEconomy("hasBankSupport", new Class<?>[0]);
+            if (r instanceof Boolean) return (Boolean) r;
+        } catch (Throwable ignored) {}
+        return true;
+    }
+
     // Reflection helpers for interacting with economy provider without compile-time Vault dependency
     private double getBalanceOf(String who) {
         if (econ == null) return 0.0;
-        if (payerIsServer) {
+        if (payerIsServer && economyBankSupport) {
             Double balance = extractBalance(invokeEconomy("bankBalance", new Class<?>[]{String.class}, who));
             if (balance != null) return balance;
         }
@@ -962,7 +994,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     private Object withdrawFrom(String who, double amount) {
         if (econ == null) return null;
-        if (payerIsServer) {
+        if (payerIsServer && economyBankSupport) {
             Object response = invokeEconomy("bankWithdraw", new Class<?>[]{String.class, double.class}, who, amount);
             if (response != null) return response;
         }
@@ -1001,7 +1033,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private Object depositTo(String who, double amount) {
         if (econ == null) return null;
         try {
-            if (payerIsServer && who.equals(payerDisplay)) {
+            if (payerIsServer && economyBankSupport && who.equals(payerDisplay)) {
                 Object bankResponse = invokeEconomy("bankDeposit", new Class<?>[]{String.class, double.class}, who, amount);
                 if (bankResponse != null) return bankResponse;
             }
@@ -1207,6 +1239,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(" 累计出题: §f" + totalAsked + " §7已答对: §f" + totalAnswered);
             if (economyAvailable) {
                 sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format("%.2f", getBalanceOf(payerDisplay)) + ")");
+                sender.sendMessage(" 经济后端: §f" + (economyProviderName != null ? economyProviderName : "未知")
+                        + (payerIsServer && !economyBankSupport ? " §7(无银行账户，按账户名扣款)" : ""));
             } else {
                 sender.sendMessage(" 经济系统: §e未检测到 Vault（纯公告模式，无货币奖励）");
             }
