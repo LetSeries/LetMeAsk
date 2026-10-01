@@ -412,6 +412,22 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return hit;
     }
 
+    // Keep Bukkit's legacy text APIs for compatibility with both Paper and Spigot.
+    @SuppressWarnings("deprecation")
+    private void broadcastLegacy(String message) {
+        Bukkit.broadcastMessage(message);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void kickLegacy(Player player, String reason) {
+        player.kickPlayer(reason);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void showLegacyTitle(Player player, String title, String subtitle) {
+        player.sendTitle(title, subtitle);
+    }
+
     /** 可配置消息：读 messages.<key>，缺失用默认值；支持 & 颜色码与 {arg} 占位。 */
     private String msg(String key, String def, String arg) {
         String s = baseCfg == null ? def : baseCfg.getString("messages." + key, def);
@@ -497,7 +513,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             recentChatMessages.clear();
         }
         totalAsked++;
-        Bukkit.broadcastMessage(messagePrefix() + " §f新题目: §f" + q.question);
+        broadcastLegacy(messagePrefix() + " §f新题目: §f" + q.question);
     }
 
     /**
@@ -594,7 +610,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             double bal = getBalanceOf(payerDisplay);
             if (bal >= rewardAmount) {
                 paused = false;
-                Bukkit.broadcastMessage(messagePrefix() + " §a资金已足额，恢复出题。当前余额: " + bal + "，预计还可以奖励" + (bal / rewardAmount) + "次。");
+                broadcastLegacy(messagePrefix() + " §a资金已足额，恢复出题。当前余额: " + bal + "，预计还可以奖励" + (bal / rewardAmount) + "次。");
             } else {
                 return;
             }
@@ -605,7 +621,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             long elapsedMillis = System.currentTimeMillis() - verifyStartMillis;
             if (elapsedMillis >= verifyTimeoutSeconds * 1000L) {
                 getLogger().warning("人机验证超时（" + verifyTimeoutSeconds + "s），自动解锁并作废本轮题目");
-                Bukkit.broadcastMessage(messagePrefix() + " §c人机验证超时，本轮题目作废。");
+                broadcastLegacy(messagePrefix() + " §c人机验证超时，本轮题目作废。");
                 clearQuestionState();
             }
             return;
@@ -616,7 +632,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (questionTimeoutSeconds > 0) {
                 long elapsedMillis = System.currentTimeMillis() - currentQuestion.postTime;
                 if (elapsedMillis >= questionTimeoutSeconds * 1000L) {
-                    Bukkit.broadcastMessage(messagePrefix() + " §c无人答对！答案是: §f" + currentQuestion.displayAnswer());
+                    broadcastLegacy(messagePrefix() + " §c无人答对！答案是: §f" + currentQuestion.displayAnswer());
                     correctAnswerCounts.clear();
                     lastCorrectTimes.clear();
                     clearQuestionState();
@@ -646,6 +662,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     }
 
     @EventHandler(ignoreCancelled = true)
+    @SuppressWarnings("deprecation")
     public void onPlayerChat(AsyncPlayerChatEvent event) {
         Question snapshot = currentQuestion;
         if (snapshot == null || verifying) return;
@@ -705,8 +722,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         if (chatTooFast) {
             resetStreak(player.getUniqueId());
             clearQuestionState();
-            Bukkit.broadcastMessage(messagePrefix() + " §c玩家 §f" + player.getName() + " §c因聊天消息间隔过短被踢出服务器。");
-            player.kickPlayer("聊天消息间隔过短");
+            broadcastLegacy(messagePrefix() + " §c玩家 §f" + player.getName() + " §c因聊天消息间隔过短被踢出服务器。");
+            kickLegacy(player, "聊天消息间隔过短");
             return;
         }
 
@@ -734,7 +751,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             verifyStartMillis = System.currentTimeMillis();
             Player p = player;
             String reason = answeredTooFast ? "答题速度过快" : "连续答对次数过多";
-            Bukkit.broadcastMessage(messagePrefix() + " §c玩家 §f" + p.getName() + " §c"
+            broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c"
                     + reason + "，需要进行人机验证...");
 
             // Try to call HumanVerifyApi as in provided snippet. This requires that the HumanVerify API
@@ -742,7 +759,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             try {
                 // 使用反射调用 HumanVerifyApi，避免将第三方实现打进本插件。
                 Class<?> apiClass = Class.forName("org.cubexmc.humanverify.api.HumanVerifyApi");
-                Object api = Bukkit.getServicesManager().load((Class) apiClass);
+                Object api = Bukkit.getServicesManager().load(apiClass);
                 if (api != null) {
                     Object future = null;
                     try {
@@ -789,8 +806,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                                     } else {
                                         resetStreak(targetPlayer);
                                         clearQuestionState();
-                                        Bukkit.broadcastMessage(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
-                                        p.kickPlayer("未通过人机验证");
+                                        broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
+                                        kickLegacy(p, "未通过人机验证");
                                     }
                                 });
                             } catch (Throwable t) {
@@ -848,7 +865,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         try {
             String sub = celebrateSubtitle.replace("{reward}", String.format("%.0f", earned));
             if (earned <= 0.0) sub = "";
-            winner.sendTitle(celebrateTitle.replace('&', '§'), sub.replace('&', '§'));
+            showLegacyTitle(winner, celebrateTitle.replace('&', '§'), sub.replace('&', '§'));
         } catch (Throwable t) {
             getLogger().fine("发送 Title 失败: " + t.getMessage());
         }
@@ -870,21 +887,21 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // 无 Vault 时降级为纯公告模式，不暂停出题
         if (!economyAvailable) {
             recordCorrect(winner, 0.0);
-            Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（未安装 Vault，本轮无货币奖励）");
+            broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（未安装 Vault，本轮无货币奖励）");
             celebrate(winner, 0.0);
             return;
         }
         // 奖励为 0：跳过全部转账调用，直接公告
         if (rewardAmount <= 0.0) {
             recordCorrect(winner, 0.0);
-            Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！");
+            broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！");
             celebrate(winner, 0.0);
             return;
         }
         // 答对者就是出资人：左手倒右手，跳过转账
         if (isPayer(winner)) {
             recordCorrect(winner, 0.0);
-            Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（出资人自答，无需转账）");
+            broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（出资人自答，无需转账）");
             celebrate(winner, 0.0);
             return;
         }
@@ -892,7 +909,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         double payerBal = getBalanceOf(payerDisplay);
         if (payerBal < rewardAmount) {
             paused = true;
-            Bukkit.broadcastMessage(messagePrefix() + " §c出题已暂停：资金不足（需要 " + rewardAmount + "，当前 " + payerBal + "）。");
+            broadcastLegacy(messagePrefix() + " §c出题已暂停：资金不足（需要 " + rewardAmount + "，当前 " + payerBal + "）。");
             return;
         }
 
@@ -900,7 +917,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         if (!isEconomyResponseSuccess(w)) {
             paused = true;
             String err = getEconomyResponseError(w);
-            Bukkit.broadcastMessage(messagePrefix() + " §c转账失败（错误: " + err + "），出题已暂停。请检查服务器日志。" );
+            broadcastLegacy(messagePrefix() + " §c转账失败（错误: " + err + "），出题已暂停。请检查服务器日志。" );
             getLogger().warning("扣款失败: " + err);
             return;
         }
@@ -911,12 +928,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             String err = getEconomyResponseError(d);
             getLogger().warning("发放给胜利玩家失败: " + err + "。尝试退款。");
             depositTo(payerDisplay, rewardAmount);
-            Bukkit.broadcastMessage(messagePrefix() + " §c发放奖励失败，已退款，请联系管理员。错误: " + err);
+            broadcastLegacy(messagePrefix() + " §c发放奖励失败，已退款，请联系管理员。错误: " + err);
             return;
         }
 
         recordCorrect(winner, rewardAmount);
-        Bukkit.broadcastMessage(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题，获得 §e" + rewardAmount + " §a货币！");
+        broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题，获得 §e" + rewardAmount + " §a货币！");
         celebrate(winner, rewardAmount);
     }
 
@@ -924,7 +941,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         try {
             Class<?> econClass = Class.forName("net.milkbowl.vault.economy.Economy");
             // get registration via ServicesManager.getRegistration(Class)
-            Object rsp = getServer().getServicesManager().getRegistration((Class) econClass);
+            Object rsp = getServer().getServicesManager().getRegistration(econClass);
             if (rsp == null) return false;
             // RegisteredServiceProvider has method getProvider()
             Method getProvider = rsp.getClass().getMethod("getProvider");
