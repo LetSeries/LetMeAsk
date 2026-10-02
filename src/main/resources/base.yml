@@ -28,6 +28,8 @@ anti-bot-correct-answer-threshold: 3
 anti-bot-streak-window-seconds: 300
 # 人机验证超时（秒）：回调长时间未返回时自动解锁并作废本轮，最小 10 秒
 verify-timeout-seconds: 120
+# 出题因资金不足暂停后，每隔多少秒复查一次出资人余额；最小 5 秒
+balance-retry-seconds: 30
 # 0-1，答案相似度阈值，越高越严格；1.0 = 严格精确匹配
 fuzzy-similarity-threshold: 0.75
 # 定时广播排行榜：enabled 设为 false 关闭；minutes 最小 1 分钟；count 最多 20 条

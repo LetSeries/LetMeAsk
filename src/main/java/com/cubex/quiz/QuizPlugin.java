@@ -61,6 +61,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private int antiBotChatHistoryCount;
     private double antiBotChatMinIntervalSeconds;
     private long verifyTimeoutSeconds;
+    private long balanceRetrySeconds = 30L; // 暂停后每隔多少秒复查一次出资人余额
+    private volatile long nextBalanceCheckMillis = 0L;
     private double fuzzySimilarityThreshold = 0.75; // default similarity threshold (0-1)
     private boolean leaderboardBroadcastEnabled = true;
     private long leaderboardBroadcastMinutes = 60L;
@@ -309,6 +311,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         antiBotChatHistoryCount = Math.max(2, baseCfg.getInt("anti-bot-chat-history-count", 3));
         antiBotChatMinIntervalSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-chat-min-interval-seconds", 0.5));
         verifyTimeoutSeconds = Math.max(10L, baseCfg.getLong("verify-timeout-seconds", 120L));
+        balanceRetrySeconds = Math.max(5L, baseCfg.getLong("balance-retry-seconds", 30L));
         fuzzySimilarityThreshold = Math.min(1.0, Math.max(0.0,
                 baseCfg.getDouble("fuzzy-similarity-threshold", fuzzySimilarityThreshold)));
         leaderboardBroadcastEnabled = baseCfg.getBoolean("leaderboard-broadcast.enabled", true);
@@ -674,14 +677,18 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             // 降级模式：无 Vault 时不暂停出题逻辑，但 awardWinner 只发公告
             if (paused) paused = false;
         } else if (paused) {
-            // 暂停中：资金足额则恢复，否则等待
+            // 暂停中：节流复查余额（默认 30 秒一次），避免每秒打一次 Vault 后端
+            long nowMs = System.currentTimeMillis();
+            if (nowMs < nextBalanceCheckMillis) return;
+            nextBalanceCheckMillis = nowMs + balanceRetrySeconds * 1000L;
             double bal = getBalanceOf(payerDisplay);
             if (bal >= rewardAmount) {
                 paused = false;
                 String countMsg = rewardAmount > 0.0
-                        ? "，预计还可以奖励" + (int) (bal / rewardAmount) + "次。"
+                        ? "，预计还可以奖励" + String.format("%,d", (long) (bal / rewardAmount)) + "次。"
                         : "。";
-                broadcastLegacy(messagePrefix() + " §a资金已足额，恢复出题。当前余额: " + bal + countMsg);
+                broadcastLegacy(messagePrefix() + " §a资金已足额，恢复出题。当前余额: "
+                        + String.format("%,.2f", bal) + countMsg);
             } else {
                 return;
             }
@@ -991,6 +998,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         double payerBal = getBalanceOf(payerDisplay);
         if (payerBal < rewardAmount) {
             paused = true;
+            // 进入暂停即定好下次复查时间，避免 tick 第一秒就重复查询
+            nextBalanceCheckMillis = System.currentTimeMillis() + balanceRetrySeconds * 1000L;
             broadcastLegacy(messagePrefix() + " §c出题已暂停：资金不足（需要 " + rewardAmount + "，当前 " + payerBal + "）。");
             return;
         }
@@ -998,6 +1007,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         Object w = withdrawFrom(payerDisplay, rewardAmount);
         if (!isEconomyResponseSuccess(w)) {
             paused = true;
+            nextBalanceCheckMillis = System.currentTimeMillis() + balanceRetrySeconds * 1000L;
             String err = getEconomyResponseError(w);
             broadcastLegacy(messagePrefix() + " §c转账失败（错误: " + err + "），出题已暂停。请检查服务器日志。" );
             getLogger().warning("扣款失败: " + err);
@@ -1129,13 +1139,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return depositTo(winner.getName(), amount);
     }
 
+    /**
+     * 按账户名发奖（仅用于退款路径）。
+     * 注意：正常发奖走 depositTo(Player)；出资人自答已被 isPayer 短路，所以这里不会遇到 Server 账户，
+     * 无需 bankDeposit 分支。
+     */
     private Object depositTo(String who, double amount) {
         if (econ == null) return null;
         try {
-            if (payerIsServer && economyBankSupport && who.equals(payerDisplay)) {
-                Object bankResponse = invokeEconomy("bankDeposit", new Class<?>[]{String.class, double.class}, who, amount);
-                if (bankResponse != null) return bankResponse;
-            }
             if (payerUsesUuid && who != null && payerOffline != null && payerOffline.getName() != null && payerOffline.getName().equals(who)) {
                 // deposit to offline payer
                 try {

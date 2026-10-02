@@ -75,6 +75,9 @@ anti-bot-streak-window-seconds: 300
 # 人机验证超时（秒），回调长时间未返回时自动解锁并作废本轮
 verify-timeout-seconds: 120
 
+# 资金不足暂停后，每隔多少秒复查一次出资人余额（最小 5 秒）
+balance-retry-seconds: 30
+
 # 答案模糊匹配阈值（0-1，越高越严格；1.0=精确匹配）
 fuzzy-similarity-threshold: 0.75
 
