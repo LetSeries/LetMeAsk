@@ -669,6 +669,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return s == null ? "" : NON_ALNUM.matcher(s).replaceAll("").toLowerCase(Locale.ROOT);
     }
 
+    /** DP 数组复用：聊天消息长度已限 100 字，按 128 预分配，线程隔离避免并发污染。 */
+    private static final ThreadLocal<int[][]> LEVENSHTEIN_BUF =
+            ThreadLocal.withInitial(() -> new int[2][128]);
+
     /**
      * 带上界的编辑距离：若中途已能确定距离超过 maxDist，直接返回 maxDist+1。
      * 调用方只关心“是否达标”，超标的精确值无意义，早退省掉剩余 DP 计算。
@@ -677,6 +681,32 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         int n = s1.length();
         int m = s2.length();
         if (Math.abs(n - m) > maxDist) return maxDist + 1; // 长度差本身就是下界
+        // 超长回退：正常走不到（聊天限 100 字），避免越界
+        if (m + 1 > 128) return levenshteinAlloc(s1, s2, maxDist);
+        int[][] buf = LEVENSHTEIN_BUF.get();
+        int[] prev = buf[0];
+        int[] curr = buf[1];
+        for (int j = 0; j <= m; j++) prev[j] = j;
+        for (int i = 1; i <= n; i++) {
+            curr[0] = i;
+            int rowMin = curr[0];
+            for (int j = 1; j <= m; j++) {
+                int cost = s1.charAt(i - 1) == s2.charAt(j - 1) ? 0 : 1;
+                curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+                if (curr[j] < rowMin) rowMin = curr[j];
+            }
+            if (rowMin > maxDist) return maxDist + 1; // 整行都超标，后续只会更大
+            int[] tmp = prev;
+            prev = curr;
+            curr = tmp;
+        }
+        return prev[m];
+    }
+
+    /** 超长回退路径：分配新数组计算（正常走不到，仅防越界）。 */
+    private int levenshteinAlloc(String s1, String s2, int maxDist) {
+        int n = s1.length();
+        int m = s2.length();
         int[] prev = new int[m + 1];
         int[] curr = new int[m + 1];
         for (int j = 0; j <= m; j++) prev[j] = j;
@@ -688,7 +718,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
                 if (curr[j] < rowMin) rowMin = curr[j];
             }
-            if (rowMin > maxDist) return maxDist + 1; // 整行都超标，后续只会更大
+            if (rowMin > maxDist) return maxDist + 1;
             int[] tmp = prev;
             prev = curr;
             curr = tmp;
@@ -1321,7 +1351,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     return true;
                 case "stop":
                     stopTask();
-                    sender.sendMessage("§c已停止定时出题");
+                    // 停止同时作废当前题并解锁验证：否则题目残留仍可作答，与“已停止”语义矛盾
+                    if (currentQuestion != null || verifying) {
+                        if (verifyingPlayer != null) resetStreak(verifyingPlayer);
+                        clearQuestionState();
+                        sender.sendMessage("§c已停止定时出题（当前题目已作废）");
+                    } else {
+                        sender.sendMessage("§c已停止定时出题");
+                    }
                     return true;
                 case "question":
                 case "q": {
