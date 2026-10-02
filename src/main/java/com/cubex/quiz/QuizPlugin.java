@@ -977,7 +977,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 java.util.UUID targetPlayer = p.getUniqueId();
                 java.util.UUID targetQuestion = snapshot.id;
                 long targetEpoch = verifyEpoch;
-                ((java.util.concurrent.CompletableFuture<?>) future).thenAccept(result -> {
+                // whenComplete 而非 thenAccept：future 异常完成时 thenAccept 永不触发，
+                // verifying 会锁死到超时兜底；异常视为验证服务故障，降级直接发奖
+                ((java.util.concurrent.CompletableFuture<?>) future).whenComplete((result, ex) -> {
+                    if (ex != null) {
+                        getLogger().log(Level.WARNING, "人机验证 future 异常完成，跳过验证直接发奖", ex);
+                        Bukkit.getScheduler().runTask(this, () -> {
+                            if (targetEpoch != verifyEpoch) return;
+                            if (!verifying || !targetPlayer.equals(verifyingPlayer)) return;
+                            resetStreak(targetPlayer);
+                            clearQuestionState();
+                            awardWinner(p);
+                        });
+                        return;
+                    }
                     try {
                         // 通过比较枚举名称判断是否为 SUCCESS
                         boolean ok = false;
@@ -1010,8 +1023,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                             } else {
                                 resetStreak(targetPlayer);
                                 clearQuestionState();
-                                broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
-                                kickLegacy(p, "未通过人机验证");
+                                if (p.isOnline()) {
+                                    broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
+                                    kickLegacy(p, "未通过人机验证");
+                                }
                             }
                         });
                     } catch (Throwable t) {
