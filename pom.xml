@@ -5,10 +5,12 @@
 
     <groupId>com.cubex</groupId>
     <artifactId>LetMeAsk</artifactId>
-    <version>1.1.0</version>
+    <!-- 唯一版本源：改这里即可，plugin.yml 与产物 jar 名自动跟随 -->
+    <version>${revision}</version>
     <packaging>jar</packaging>
 
     <properties>
+        <revision>1.1.0</revision>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -41,6 +43,22 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>plugin.yml</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>plugin.yml</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -52,5 +70,6 @@
                 </configuration>
             </plugin>
         </plugins>
+        <finalName>${project.artifactId}-${revision}</finalName>
     </build>
 </project>

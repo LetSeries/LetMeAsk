@@ -119,6 +119,16 @@ mvn clean package
 gradle build
 ```
 
+### 版本管理
+
+版本号唯一来源是 `pom.xml` 的 `<revision>`，`plugin.yml` 与产物 jar 名构建时自动跟随，**发版只改这一处**：
+
+```bash
+mvn clean package -Drevision=1.2.0
+```
+
+CI 每次构建会自动追加 commit 短哈希（如 `1.1.0-a1b2c3d`），`latest` release 永远是最新构建。
+
 ## 许可证
 
 MIT License

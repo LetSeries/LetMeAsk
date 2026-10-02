@@ -22,17 +22,26 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      - name: Resolve version
+        id: version
+        run: |
+          base=$(grep -oPm1 '(?<=<revision>)[^<]+' pom.xml)
+          sha=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "revision=${base}-${sha}" >> "$GITHUB_OUTPUT"
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
+
       - name: Build with Maven
-        run: mvn -B clean package
+        run: mvn -B clean package -Drevision=${{ steps.version.outputs.revision }}
 
       - name: Publish to rolling release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Latest build
+          name: Latest build (${{ steps.version.outputs.revision }})
           body: |
             自动构建（每次 push 到 main 触发）。
 
+            版本: ${{ steps.version.outputs.revision }}（基础版本 ${{ steps.version.outputs.base }} + commit 短哈希）
             Commit: ${{ github.sha }}
             分支: ${{ github.ref_name }}
             时间: ${{ github.event.head_commit.timestamp }}
