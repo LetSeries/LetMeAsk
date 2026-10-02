@@ -1072,10 +1072,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         Object d = depositTo(winner, rewardAmount);
         if (!isEconomyResponseSuccess(d)) {
-            // refund payer if possible
+            // refund payer if possible（必须走对称通道，否则 Server/UUID 出资时钱退错地方）
             String err = getEconomyResponseError(d);
             getLogger().warning("发放给胜利玩家失败: " + err + "。尝试退款。");
-            depositTo(payerDisplay, rewardAmount);
+            refundToPayer(rewardAmount);
             broadcastLegacy(messagePrefix() + " §c发放奖励失败，已退款，请联系管理员。错误: " + err);
             return;
         }
@@ -1196,24 +1196,43 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     }
 
     /**
-     * 按账户名发奖（仅用于退款路径）。
-     * 注意：正常发奖走 depositTo(Player)；出资人自答已被 isPayer 短路，所以这里不会遇到 Server 账户，
-     * 无需 bankDeposit 分支。
+     * 给出资人退款：必须与 withdrawFrom 走对称通道，否则钱会退错地方。
+     * <ul>
+     *   <li>Server 出资（bankWithdraw 扣的）→ bankDeposit 退回银行账户</li>
+     *   <li>UUID 出资（OfflinePlayer 扣的）→ OfflinePlayer 退回</li>
+     *   <li>普通玩家名出资 → 按名退回</li>
+     * </ul>
      */
-    private Object depositTo(String who, double amount) {
+    private Object refundToPayer(double amount) {
         if (econ == null) return null;
         try {
-            if (payerUsesUuid && who != null && payerOffline != null && payerOffline.getName() != null && payerOffline.getName().equals(who)) {
-                // deposit to offline payer
+            if (payerIsServer && economyBankSupport) {
+                Object response = invokeEconomy("bankDeposit", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
+                if (response != null) return response;
+            }
+            if (payerOffline != null && (payerUsesUuid || payerDisplay == null
+                    || (payerOffline.getName() != null && payerOffline.getName().equals(payerDisplay)))) {
                 try {
                     Object response = invokeEconomy("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
                     if (response != null) return response;
                 } catch (Throwable ignored) {}
             }
             try {
-                Object response = invokeEconomy("depositPlayer", new Class<?>[]{String.class, double.class}, who, amount);
+                Object response = invokeEconomy("depositPlayer", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
                 if (response != null) return response;
             } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            getLogger().log(Level.WARNING, "给账户充值时出错", t);
+        }
+        return null;
+    }
+
+    /** 按账户名发奖（仅用于非出资人退款等兜底路径）。 */
+    private Object depositTo(String who, double amount) {
+        if (econ == null) return null;
+        try {
+            Object response = invokeEconomy("depositPlayer", new Class<?>[]{String.class, double.class}, who, amount);
+            if (response != null) return response;
         } catch (Throwable t) {
             getLogger().log(Level.WARNING, "给账户充值时出错", t);
         }
