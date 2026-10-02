@@ -40,7 +40,7 @@
 | `/letmeask stats [玩家名]` | 全员 | 查看答题统计（默认查自己） |
 | `/letmeask status` | 全员 | 查看插件状态 |
 | `/letmeask start` | letmeask.admin | 启动定时出题 |
-| `/letmeask stop` | letmeask.admin | 停止定时出题 |
+| `/letmeask stop` | letmeask.admin | 停止定时出题（同时作废当前题目并解锁验证） |
 | `/letmeask question [force]` | letmeask.admin | 手动发布新题目 |
 | `/letmeask reload` | letmeask.admin | 重载配置文件 |
 

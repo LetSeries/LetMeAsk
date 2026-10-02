@@ -38,7 +38,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     private final Random random = new Random();
 
-    // runtime state
+    // 运行时状态
     private volatile Question currentQuestion = null;
     private volatile boolean paused = false; // paused due to payer insufficient funds
     private volatile boolean verifying = false; // question locked while human verification pending
@@ -50,7 +50,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private String economyProviderName = null;
     private boolean economyBankSupport = true;
 
-    // config values
+    // 配置项缓存
     private String payerName;
     private double rewardAmount;
     private long questionIntervalSeconds;
@@ -75,19 +75,19 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile float celebrateVolume = 1.0f;
     private volatile float celebratePitch = 1.0f;
 
-    // resolved payer information (support UUID / OfflinePlayer / Server / LittleSkin via prefix)
+    // 解析后的出资人信息（支持 UUID / 玩家名 / Server / LittleSkin 前缀）
     private org.bukkit.OfflinePlayer payerOffline = null;
     private boolean payerIsServer = false;
     private boolean payerUsesUuid = false;
     private String payerDisplay = null; // human readable identifier
 
-    // config files
+    // 配置文件
     private File baseFile;
     private File questionsFile;
     private FileConfiguration baseCfg;
     private FileConfiguration questionsCfg;
 
-    // scheduler handle
+    // 定时任务句柄
     private BukkitTask tickerTask;
     private BukkitTask leaderboardTask;
     private BukkitTask statsSaveTask;
@@ -142,7 +142,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             getCommand("letmeask").setTabCompleter(quizCommand);
         }
 
-        // Start scheduler to post questions periodically (also checks paused state)
+        // 启动定时出题任务（同时处理暂停恢复检查）
         startTask();
 
         loadStats();
@@ -542,7 +542,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             payerDisplay = payer;
             return;
         }
-        // support littleskin:uuid or littleskin:name
+        // 支持 littleskin:uuid 或 littleskin:name 两种写法
         if (payer.toLowerCase().startsWith("littleskin:")) {
             String v = payer.substring(payer.indexOf(":") + 1);
             try {
@@ -557,7 +557,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             payerDisplay = payerOffline.getName() != null ? payerOffline.getName() : v;
             return;
         }
-        // try UUID
+        // 尝试按 UUID 解析
         try {
             java.util.UUID uuid = java.util.UUID.fromString(payer);
             payerOffline = Bukkit.getOfflinePlayer(uuid);
@@ -566,7 +566,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             return;
         } catch (IllegalArgumentException ignored) {
         }
-        // fallback to name
+        // 兜底按玩家名处理
         payerOffline = Bukkit.getOfflinePlayer(payer);
         payerDisplay = payerOffline.getName() != null ? payerOffline.getName() : payer;
     }
@@ -889,13 +889,13 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         boolean answeredTooOften = antiBotCorrectAnswerThreshold > 0
                 && correctAnswerCount >= antiBotCorrectAnswerThreshold;
 
-        // Invoke human verification for unusually fast or repeated correct answers.
+        // 答题过快或连续答对过多时触发人机验证
         if (answeredTooFast || answeredTooOften) {
             Player p = player;
             String reason = answeredTooFast ? "答题速度过快" : "连续答对次数过多";
 
-            // Try to call HumanVerifyApi as in provided snippet. This requires that the HumanVerify API
-            // is available at compile/runtime. If you use a different package, add the dependency.
+            // 按对接示例调用 HumanVerifyApi，要求该 API 在编译/运行时可用；
+            // 若对方包名不同，需自行调整。
             // 注意：verifying 锁与广播放在确认 future 有效之后；验证服务缺失时直接发奖，不打扰玩家。
             Object future = null;
             try {
@@ -1052,7 +1052,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             celebrate(winner, 0.0);
             return;
         }
-        // Check payer balance
+        // 检查出资人余额
         double payerBal = getBalanceOf(payerDisplay);
         if (payerBal < rewardAmount) {
             paused = true;
@@ -1090,10 +1090,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private boolean setupEconomy() {
         try {
             Class<?> econClass = Class.forName("net.milkbowl.vault.economy.Economy");
-            // get registration via ServicesManager.getRegistration(Class)
+            // 通过 ServicesManager 获取 Vault 经济服务注册信息
             Object rsp = getServer().getServicesManager().getRegistration(econClass);
             if (rsp == null) return false;
-            // RegisteredServiceProvider has method getProvider()
+            // RegisteredServiceProvider 通过 getProvider() 取实际服务实例
             Method getProvider = rsp.getClass().getMethod("getProvider");
             Object provider = getProvider.invoke(rsp);
             this.econ = provider;
@@ -1284,13 +1284,13 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private boolean isEconomyResponseSuccess(Object resp) {
         if (resp == null) return false;
         try {
-            // try transactionSuccess() method
+            // 先试 transactionSuccess() 方法
             try {
                 Method m = resp.getClass().getMethod("transactionSuccess");
                 Object r = m.invoke(resp);
                 if (r instanceof Boolean) return (Boolean) r;
             } catch (NoSuchMethodException ignored) {}
-            // try success field
+            // 再试 success 字段
             try {
                 java.lang.reflect.Field f = resp.getClass().getField("success");
                 Object r = f.get(resp);
@@ -1305,19 +1305,19 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private String getEconomyResponseError(Object resp) {
         if (resp == null) return "null_response";
         try {
-            // try errorMessage field
+            // 先试 errorMessage 字段
             try {
                 java.lang.reflect.Field f = resp.getClass().getField("errorMessage");
                 Object r = f.get(resp);
                 if (r != null) return r.toString();
             } catch (NoSuchFieldException ignored) {}
-            // try getErrorMessage() method
+            // 再试 getErrorMessage() 方法
             try {
                 Method m = resp.getClass().getMethod("getErrorMessage");
                 Object r = m.invoke(resp);
                 if (r != null) return r.toString();
             } catch (NoSuchMethodException ignored) {}
-            // try toString()
+            // 兜底用 toString()
             return resp.toString();
         } catch (Throwable t) {
             getLogger().log(Level.WARNING, "读取经济响应错误信息时出错", t);
