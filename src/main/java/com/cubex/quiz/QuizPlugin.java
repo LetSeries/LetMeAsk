@@ -58,21 +58,22 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private double antiBotThresholdSeconds;
     private int antiBotCorrectAnswerThreshold;
     private long antiBotStreakWindowSeconds;
-    private int antiBotChatHistoryCount;
-    private double antiBotChatMinIntervalSeconds;
+    // 异步聊天线程会读 antiBotChat*/fuzzySimilarityThreshold/celebrate*（reload 在主线程写），加 volatile 保证可见性
+    private volatile int antiBotChatHistoryCount;
+    private volatile double antiBotChatMinIntervalSeconds;
     private long verifyTimeoutSeconds;
     private long balanceRetrySeconds = 30L; // 暂停后每隔多少秒复查一次出资人余额
     private volatile long nextBalanceCheckMillis = 0L;
-    private double fuzzySimilarityThreshold = 0.75; // default similarity threshold (0-1)
+    private volatile double fuzzySimilarityThreshold = 0.75; // default similarity threshold (0-1)
     private boolean leaderboardBroadcastEnabled = true;
     private long leaderboardBroadcastMinutes = 60L;
     private int leaderboardBroadcastCount = 10;
-    private boolean celebrateEnabled = true;
-    private String celebrateTitle = "§6§l答对了！";
-    private String celebrateSubtitle = "§e+{reward} 金币";
-    private String celebrateSound = "ENTITY_PLAYER_LEVELUP";
-    private float celebrateVolume = 1.0f;
-    private float celebratePitch = 1.0f;
+    private volatile boolean celebrateEnabled = true;
+    private volatile String celebrateTitle = "§6§l答对了！";
+    private volatile String celebrateSubtitle = "§e+{reward} 金币";
+    private volatile String celebrateSound = "ENTITY_PLAYER_LEVELUP";
+    private volatile float celebrateVolume = 1.0f;
+    private volatile float celebratePitch = 1.0f;
 
     // resolved payer information (support UUID / OfflinePlayer / Server / LittleSkin via prefix)
     private org.bukkit.OfflinePlayer payerOffline = null;
@@ -849,96 +850,95 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         // Invoke human verification for unusually fast or repeated correct answers.
         if (answeredTooFast || answeredTooOften) {
-            verifying = true;
-            verifyingPlayer = player.getUniqueId();
-            verifyStartMillis = System.currentTimeMillis();
             Player p = player;
             String reason = answeredTooFast ? "答题速度过快" : "连续答对次数过多";
-            broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c"
-                    + reason + "，需要进行人机验证...");
 
             // Try to call HumanVerifyApi as in provided snippet. This requires that the HumanVerify API
             // is available at compile/runtime. If you use a different package, add the dependency.
+            // 注意：verifying 锁与广播放在确认 future 有效之后；验证服务缺失时直接发奖，不打扰玩家。
+            Object future = null;
             try {
                 // 使用反射调用 HumanVerifyApi，避免将第三方实现打进本插件。
                 Class<?> apiClass = Class.forName("org.cubexmc.humanverify.api.HumanVerifyApi");
                 Object api = Bukkit.getServicesManager().load(apiClass);
                 if (api != null) {
-                    Object future = null;
                     try {
                         future = apiClass.getMethod("requestVerification", org.bukkit.entity.Player.class, boolean.class)
                                 .invoke(api, p, true);
                     } catch (NoSuchMethodException nsme) {
-                        getLogger().warning("HumanVerifyApi 没有 requestVerification(Player, boolean) 方法，验证失败，不发放奖励。");
+                        getLogger().warning("HumanVerifyApi 没有 requestVerification(Player, boolean) 方法，跳过验证直接发奖。");
                     }
-
-                    if (future instanceof java.util.concurrent.CompletableFuture) {
-                        java.util.UUID targetPlayer = p.getUniqueId();
-                        java.util.UUID targetQuestion = snapshot.id;
-                        long targetEpoch = verifyEpoch;
-                        ((java.util.concurrent.CompletableFuture<?>) future).thenAccept(result -> {
-                            try {
-                                // 通过比较枚举名称判断是否为 SUCCESS
-                                boolean ok = false;
-                                try {
-                                    java.lang.reflect.Method nameM = result.getClass().getMethod("name");
-                                    String nm = (String) nameM.invoke(result);
-                                    ok = "SUCCESS".equals(nm);
-                                } catch (Exception e) {
-                                    // fallback to toString
-                                    ok = "SUCCESS".equals(result.toString());
-                                }
-                                final boolean passed = ok;
-
-                                Bukkit.getScheduler().runTask(this, () -> {
-                                    // 若已超时兜底/题目轮换/reload/force，直接丢弃过期回调
-                                    if (targetEpoch != verifyEpoch) return;
-                                    if (!verifying || !targetPlayer.equals(verifyingPlayer)) return;
-                                    Question cur = currentQuestion;
-                                    if (cur == null || cur.id == null || !cur.id.equals(targetQuestion)) return;
-
-                                    if (passed) {
-                                        if (!p.isOnline()) {
-                                            resetStreak(targetPlayer);
-                                            clearQuestionState();
-                                            return;
-                                        }
-                                        resetStreak(targetPlayer);
-                                        clearQuestionState();
-                                        awardWinner(p);
-                                    } else {
-                                        resetStreak(targetPlayer);
-                                        clearQuestionState();
-                                        broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
-                                        kickLegacy(p, "未通过人机验证");
-                                    }
-                                });
-                            } catch (Throwable t) {
-                                getLogger().log(Level.SEVERE, "处理人机验证结果时出错", t);
-                                Bukkit.getScheduler().runTask(this, () -> {
-                                    resetStreak(p.getUniqueId());
-                                    clearQuestionState();
-                                });
-                            }
-                        });
-                    } else {
-                        getLogger().warning("HumanVerifyApi.requestVerification 未返回 CompletableFuture 或返回 null，验证失败，不发放奖励");
-                        resetStreak(p.getUniqueId());
-                        clearQuestionState();
+                    if (future != null && !(future instanceof java.util.concurrent.CompletableFuture)) {
+                        getLogger().warning("HumanVerifyApi.requestVerification 未返回 CompletableFuture，跳过验证直接发奖");
+                        future = null;
                     }
                 } else {
-                    getLogger().warning("未能通过 ServicesManager 加载 HumanVerifyApi，验证失败，不发放奖励。");
-                    resetStreak(p.getUniqueId());
-                    clearQuestionState();
+                    getLogger().warning("未能通过 ServicesManager 加载 HumanVerifyApi，跳过验证直接发奖。");
                 }
             } catch (ClassNotFoundException cnf) {
-                getLogger().warning("HumanVerifyApi 类未找到，无法执行人机验证。请确认 HumanVerify 已安装并先于本插件加载。");
-                resetStreak(p.getUniqueId());
-                clearQuestionState();
+                getLogger().warning("HumanVerifyApi 类未找到，跳过验证直接发奖。请确认 HumanVerify 已安装并先于本插件加载。");
             } catch (Throwable t) {
-                getLogger().log(Level.SEVERE, "调用人机验证 API 时出错，验证失败，不发放奖励", t);
-                resetStreak(p.getUniqueId());
-                clearQuestionState();
+                getLogger().log(Level.SEVERE, "调用人机验证 API 时出错，跳过验证直接发奖", t);
+            }
+
+            if (future == null) {
+                // 验证服务调不起来：按 README 承诺降级为直接发奖，不作废玩家答案
+                awardWinner(p);
+            } else {
+                verifying = true;
+                verifyingPlayer = player.getUniqueId();
+                verifyStartMillis = System.currentTimeMillis();
+                broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c"
+                        + reason + "，需要进行人机验证...");
+                java.util.UUID targetPlayer = p.getUniqueId();
+                java.util.UUID targetQuestion = snapshot.id;
+                long targetEpoch = verifyEpoch;
+                ((java.util.concurrent.CompletableFuture<?>) future).thenAccept(result -> {
+                    try {
+                        // 通过比较枚举名称判断是否为 SUCCESS
+                        boolean ok = false;
+                        try {
+                            java.lang.reflect.Method nameM = result.getClass().getMethod("name");
+                            String nm = (String) nameM.invoke(result);
+                            ok = "SUCCESS".equals(nm);
+                        } catch (Exception e) {
+                            // fallback to toString
+                            ok = "SUCCESS".equals(result.toString());
+                        }
+                        final boolean passed = ok;
+
+                        Bukkit.getScheduler().runTask(this, () -> {
+                            // 若已超时兜底/题目轮换/reload/force，直接丢弃过期回调
+                            if (targetEpoch != verifyEpoch) return;
+                            if (!verifying || !targetPlayer.equals(verifyingPlayer)) return;
+                            Question cur = currentQuestion;
+                            if (cur == null || cur.id == null || !cur.id.equals(targetQuestion)) return;
+
+                            if (passed) {
+                                if (!p.isOnline()) {
+                                    resetStreak(targetPlayer);
+                                    clearQuestionState();
+                                    return;
+                                }
+                                resetStreak(targetPlayer);
+                                clearQuestionState();
+                                awardWinner(p);
+                            } else {
+                                resetStreak(targetPlayer);
+                                clearQuestionState();
+                                broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
+                                kickLegacy(p, "未通过人机验证");
+                            }
+                        });
+                    } catch (Throwable t) {
+                        getLogger().log(Level.SEVERE, "处理人机验证结果时出错", t);
+                        Bukkit.getScheduler().runTask(this, () -> {
+                            resetStreak(p.getUniqueId());
+                            clearQuestionState();
+                        });
+                    }
+                });
+                // else 分支结束：验证回调已挂接，后续由回调或超时兜底解锁
             }
 
             return;
@@ -1417,7 +1417,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
                 String prefix = args[0].toLowerCase(Locale.ROOT);
-                List<String> subs = new ArrayList<>(Arrays.asList("help", "top", "stats", "status"));
+                List<String> subs = new ArrayList<>(Arrays.asList("help", "?", "top", "stats", "status"));
                 if (sender.hasPermission("letmeask.admin")) {
                     subs.addAll(Arrays.asList("start", "stop", "question", "q", "reload"));
                 }
