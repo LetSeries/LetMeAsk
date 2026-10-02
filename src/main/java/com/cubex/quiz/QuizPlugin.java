@@ -111,7 +111,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // Ensure default resource files exist
         saveResource("base.yml", false);
         saveResource("questions.yml", false);
-	
+
         // load configuration files
         if (!loadConfigValues()) {
             getLogger().severe("启动时题库为空，禁用插件。请在 questions.yml 中添加题目后重启。");
@@ -963,7 +963,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             org.bukkit.Sound sound = org.bukkit.Sound.valueOf(celebrateSound.toUpperCase(Locale.ROOT));
             for (Player p : Bukkit.getOnlinePlayers()) {
                 try {
-                    p.playSound(p.getLocation(), sound, celebrateVolume, celebratePitch);
+                    // 走 MASTER 通道：不受玩家环境音量设置影响，保证庆祝音效可听
+                    p.playSound(p.getLocation(), sound, org.bukkit.SoundCategory.MASTER, celebrateVolume, celebratePitch);
                 } catch (Throwable ignored) {}
             }
         } catch (IllegalArgumentException e) {

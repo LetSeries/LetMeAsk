@@ -9,6 +9,7 @@
 - **经济系统集成**：支持 Vault 经济插件，自动扣款/发放奖励
 - **模糊匹配**：答案支持容错匹配（拼写相似度可配置）
 - **人机验证**：答题过快或连续答对过多时触发 HumanVerify 验证
+- **防脚本枚举**：本轮题目期间聊天刷屏过快直接踢出（`anti-bot-chat-*` 配置）
 - **答对特效**：答对者收到 Title 标题，全服播放升级音效（均可在 `celebrate` 下配置开关）
 - **灵活配置**：支持玩家名、UUID、服务器账户、LittleSkin 等支付方式
 
@@ -68,6 +69,10 @@ anti-bot-threshold-seconds: 1
 
 # 连续答对次数阈值，达到触发人机验证（0=禁用）
 anti-bot-correct-answer-threshold: 3
+
+# 防脚本枚举：本轮题目期间最近 N 条消息中任一相邻间隔低于该秒数则直接踢出（秒数 0=禁用）
+anti-bot-chat-history-count: 3
+anti-bot-chat-min-interval-seconds: 0.5
 
 # 连击统计时间窗口（秒），超时未答对则连击清零
 anti-bot-streak-window-seconds: 300
