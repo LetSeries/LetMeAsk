@@ -1133,8 +1133,16 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             // refund payer if possible（必须走对称通道，否则 Server/UUID 出资时钱退错地方）
             String err = getEconomyResponseError(d);
             getLogger().warning("发放给胜利玩家失败: " + err + "。尝试退款。");
-            refundToPayer(rewardAmount);
-            broadcastLegacy(messagePrefix() + " §c发放奖励失败，已退款，请联系管理员。错误: " + err);
+            Object refund = refundToPayer(rewardAmount);
+            if (isEconomyResponseSuccess(refund)) {
+                broadcastLegacy(messagePrefix() + " §c发放奖励失败，已退款，请联系管理员。错误: " + err);
+            } else {
+                // 退款也失败：出资人已被扣款，玩家未到账，必须人工介入，不能谎称已退款
+                getLogger().severe("退款失败！出资人 " + payerDisplay + " 已被扣 " + rewardAmount
+                        + "，玩家 " + winner.getName() + " 未到账。请手动补账。发放错误: " + err
+                        + "，退款错误: " + getEconomyResponseError(refund));
+                broadcastLegacy(messagePrefix() + " §c发放奖励失败，且自动退款失败！请联系管理员手动补账。错误: " + err);
+            }
             return;
         }
 
@@ -1194,23 +1202,16 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             Double balance = extractBalance(invokeEconomy("bankBalance", new Class<?>[]{String.class}, who));
             if (balance != null) return balance;
         }
+        // 注意：invokeEconomy 内部已捕获全部异常并返回 null，外层无需 try-catch
         if (payerUsesUuid && payerOffline != null) {
-            try {
-                Object response = invokeEconomy("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
-                if (response instanceof Number) return ((Number) response).doubleValue();
-            } catch (Throwable t) {
-                getLogger().fine("CMI OfflinePlayer 余额查询失败，回退到账户名: " + t.getMessage());
-            }
+            Object uuidResponse = invokeEconomy("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
+            if (uuidResponse instanceof Number) return ((Number) uuidResponse).doubleValue();
         }
-        try {
-            Object response = invokeEconomy("getBalance", new Class<?>[]{String.class}, who);
-            if (response instanceof Number) return ((Number) response).doubleValue();
-        } catch (Throwable t) {
-            getLogger().log(Level.WARNING, "查询账户 " + who + " 余额时出错", t);
-        }
+        Object response = invokeEconomy("getBalance", new Class<?>[]{String.class}, who);
+        if (response instanceof Number) return ((Number) response).doubleValue();
         if (payerOffline != null) {
-            Object response = invokeEconomy("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
-            if (response instanceof Number) return ((Number) response).doubleValue();
+            Object offlineResponse = invokeEconomy("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
+            if (offlineResponse instanceof Number) return ((Number) offlineResponse).doubleValue();
         }
         return 0.0;
     }
@@ -1221,23 +1222,16 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             Object response = invokeEconomy("bankWithdraw", new Class<?>[]{String.class, double.class}, who, amount);
             if (response != null) return response;
         }
+        // 注意：invokeEconomy 内部已捕获全部异常并返回 null，外层无需 try-catch
         if (payerUsesUuid && payerOffline != null) {
-            try {
-                Object response = invokeEconomy("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
-                if (response != null) return response;
-            } catch (Throwable t) {
-                getLogger().fine("CMI OfflinePlayer 扣款失败，回退到账户名: " + t.getMessage());
-            }
+            Object uuidResponse = invokeEconomy("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
+            if (uuidResponse != null) return uuidResponse;
         }
-        try {
-            Object response = invokeEconomy("withdrawPlayer", new Class<?>[]{String.class, double.class}, who, amount);
-            if (response != null) return response;
-        } catch (Throwable t) {
-            getLogger().log(Level.WARNING, "从账户 " + who + " 扣款时出错", t);
-        }
+        Object response = invokeEconomy("withdrawPlayer", new Class<?>[]{String.class, double.class}, who, amount);
+        if (response != null) return response;
         if (payerOffline != null) {
-            Object response = invokeEconomy("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
-            if (response != null) return response;
+            Object offlineResponse = invokeEconomy("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
+            if (offlineResponse != null) return offlineResponse;
         }
         return null;
     }
