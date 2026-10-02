@@ -1330,7 +1330,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
             if (args.length == 0) {
-                sendHelp(sender);
+                sendHelp(sender, label);
                 return true;
             }
             String sub = args[0].toLowerCase(Locale.ROOT);
@@ -1338,7 +1338,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             switch (sub) {
                 case "help":
                 case "?":
-                    sendHelp(sender);
+                    sendHelp(sender, label);
                     return true;
                 case "top":
                     sendTop(sender, args.length > 1 ? args[1] : null);
@@ -1354,7 +1354,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     || sub.equals("q") || sub.equals("reload");
             if (!adminCmd) {
                 sender.sendMessage("§c未知子命令: " + sub);
-                sendHelp(sender);
+                sendHelp(sender, label);
                 return true;
             }
             if (!sender.hasPermission("letmeask.admin")) {
@@ -1408,18 +1408,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             return true; // unreachable：adminCmd 已前置过滤，但保留以满足编译
         }
 
-        private void sendHelp(CommandSender sender) {
+        private void sendHelp(CommandSender sender, String label) {
+            // 用玩家实际输入的别名展示（如 /lma 进来就显示 /lma），复制即用
+            String cmd = (label == null || label.isEmpty()) ? "letmeask" : label;
             sender.sendMessage("§6§m----------§r §6LetMeAsk 帮助 §6§m----------");
-            sender.sendMessage("§e/letmeask help §7- 显示此帮助");
-            sender.sendMessage("§e/letmeask top [数量] §7- 答题排行榜（默认 10，最多 20）");
-            sender.sendMessage("§e/letmeask stats [玩家] §7- 查看答题统计（默认自己）");
-            sender.sendMessage("§e/letmeask status §7- 查看插件状态");
+            sender.sendMessage("§e/" + cmd + " help §7- 显示此帮助");
+            sender.sendMessage("§e/" + cmd + " top [数量] §7- 答题排行榜（默认 10，最多 20）");
+            sender.sendMessage("§e/" + cmd + " stats [玩家] §7- 查看答题统计（默认自己）");
+            sender.sendMessage("§e/" + cmd + " status §7- 查看插件状态");
             if (sender.hasPermission("letmeask.admin")) {
                 sender.sendMessage("§6管理命令:");
-                sender.sendMessage("§e/letmeask start §7- 启动定时出题");
-                sender.sendMessage("§e/letmeask stop §7- 停止定时出题");
-                sender.sendMessage("§e/letmeask question [force] §7- 发布新题目（force 强制）");
-                sender.sendMessage("§e/letmeask reload §7- 重载配置");
+                sender.sendMessage("§e/" + cmd + " start §7- 启动定时出题");
+                sender.sendMessage("§e/" + cmd + " stop §7- 停止定时出题");
+                sender.sendMessage("§e/" + cmd + " question [force] §7- 发布新题目（force 强制）");
+                sender.sendMessage("§e/" + cmd + " reload §7- 重载配置");
             }
             sender.sendMessage("§6§m--------------------------------");
         }
