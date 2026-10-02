@@ -924,6 +924,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
             if (future == null) {
                 // 验证服务调不起来：按 README 承诺降级为直接发奖，不作废玩家答案
+                // 注意：必须先消耗本题，否则题目残留可被无限次答对领奖
+                clearQuestionState();
                 awardWinner(p);
             } else {
                 verifying = true;
