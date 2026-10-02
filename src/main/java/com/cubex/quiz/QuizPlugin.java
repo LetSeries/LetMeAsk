@@ -104,7 +104,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // Ensure default resource files exist
         saveResource("base.yml", false);
         saveResource("questions.yml", false);
-
+	
         // load configuration files
         if (!loadConfigValues()) {
             getLogger().severe("启动时题库为空，禁用插件。请在 questions.yml 中添加题目后重启。");
@@ -664,10 +664,17 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         // 验证超时兜底：回调永不返回时解锁，避免永久锁死
         if (verifying) {
+            Player p = verifyingPlayer == null ? null : Bukkit.getPlayer(verifyingPlayer);
             long elapsedMillis = System.currentTimeMillis() - verifyStartMillis;
             if (elapsedMillis >= verifyTimeoutSeconds * 1000L) {
-                getLogger().warning("人机验证超时（" + verifyTimeoutSeconds + "s），自动解锁并作废本轮题目");
-                broadcastLegacy(messagePrefix() + " §c人机验证超时，本轮题目作废。");
+                if (p != null) {
+                    getLogger().warning(p.getName() + "人机验证超时（" + verifyTimeoutSeconds + "s），自动解锁作废本轮题目，并踢出玩家");
+                    broadcastLegacy(messagePrefix() + " §c玩家 " + p.getName() + " 因人机验证超时被踢出服务器，本轮题目作废。");
+                    kickLegacy(p, "人机验证超时");
+                } else {
+                    getLogger().warning("人机验证超时（" + verifyTimeoutSeconds + "s），玩家已离线，自动解锁并作废本轮题目");
+                    broadcastLegacy(messagePrefix() + " §c人机验证超时，本轮题目作废。");
+                }
                 clearQuestionState();
             }
             return;
