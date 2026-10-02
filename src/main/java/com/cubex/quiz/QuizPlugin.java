@@ -520,7 +520,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         for (Map.Entry<String, Integer> entry : sorted) {
             if (++rank > count) break;
             messages.add(" §e" + rank + ". §f" + displayNameOf(entry.getKey()) + " §7答对 §f" + entry.getValue()
-                    + " §7奖金 §e" + String.format(Locale.ROOT, "%.2f", earned.getOrDefault(entry.getKey(), 0.0)));
+                    + " §7奖金 §e" + String.format(Locale.ROOT, "%,.2f", earned.getOrDefault(entry.getKey(), 0.0)));
         }
         return messages;
     }
@@ -1114,7 +1114,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             paused = true;
             // 进入暂停即定好下次复查时间，避免 tick 第一秒就重复查询
             nextBalanceCheckMillis = System.currentTimeMillis() + balanceRetrySeconds * 1000L;
-            broadcastLegacy(messagePrefix() + " §c出题已暂停：资金不足（需要 " + rewardAmount + "，当前 " + payerBal + "）。");
+            broadcastLegacy(messagePrefix() + " §c出题已暂停：资金不足（需要 "
+                    + String.format(Locale.ROOT, "%,.2f", rewardAmount) + "，当前 "
+                    + String.format(Locale.ROOT, "%,.2f", payerBal) + "）。");
             return;
         }
 
@@ -1147,7 +1149,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
 
         recordCorrect(winner, rewardAmount);
-        broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题，获得 §e" + rewardAmount + " §a货币！");
+        broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题，获得 §e"
+                + String.format(Locale.ROOT, "%,.2f", rewardAmount) + " §a货币！");
         celebrate(winner, rewardAmount);
     }
 
@@ -1485,7 +1488,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(" 人机验证锁定: " + (verifying ? "§c是" : "§a否"));
             sender.sendMessage(" 累计出题: §f" + totalAsked + " §7已答对: §f" + totalAnswered);
             if (economyAvailable) {
-                sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format(Locale.ROOT, "%.2f", getBalanceOf(payerDisplay)) + ")");
+                sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format(Locale.ROOT, "%,.2f", getBalanceOf(payerDisplay)) + ")");
                 sender.sendMessage(" 经济后端: §f" + (economyProviderName != null ? economyProviderName : "未知")
                         + (payerIsServer && !economyBankSupport ? " §7(无银行账户，按账户名扣款)" : ""));
             } else {
@@ -1519,7 +1522,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             int correct = totalCorrect.getOrDefault(key, 0);
             double earned = totalEarned.getOrDefault(key, 0.0);
             sender.sendMessage("§6玩家 §f" + display + " §6的答题统计:");
-            sender.sendMessage(" 答对: §f" + correct + " §7累计奖金: §e" + String.format(Locale.ROOT, "%.2f", earned));
+            sender.sendMessage(" 答对: §f" + correct + " §7累计奖金: §e" + String.format(Locale.ROOT, "%,.2f", earned));
         }
 
         private void sendTop(CommandSender sender, String countArg) {
