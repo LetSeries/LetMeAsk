@@ -520,7 +520,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         for (Map.Entry<String, Integer> entry : sorted) {
             if (++rank > count) break;
             messages.add(" §e" + rank + ". §f" + displayNameOf(entry.getKey()) + " §7答对 §f" + entry.getValue()
-                    + " §7奖金 §e" + String.format("%.2f", earned.getOrDefault(entry.getKey(), 0.0)));
+                    + " §7奖金 §e" + String.format(Locale.ROOT, "%.2f", earned.getOrDefault(entry.getKey(), 0.0)));
         }
         return messages;
     }
@@ -774,10 +774,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (bal >= rewardAmount) {
                 paused = false;
                 String countMsg = rewardAmount > 0.0
-                        ? "，预计还可以奖励" + String.format("%,d", (long) (bal / rewardAmount)) + "次。"
+                        ? "，预计还可以奖励" + String.format(Locale.ROOT, "%,d", (long) (bal / rewardAmount)) + "次。"
                         : "。";
                 broadcastLegacy(messagePrefix() + " §a资金已足额，恢复出题。当前余额: "
-                        + String.format("%,.2f", bal) + countMsg);
+                        + String.format(Locale.ROOT, "%,.2f", bal) + countMsg);
             } else {
                 return;
             }
@@ -791,7 +791,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 if (p != null) {
                     getLogger().warning(p.getName() + "人机验证超时（" + verifyTimeoutSeconds + "s），自动解锁作废本轮题目，并踢出玩家");
                     broadcastLegacy(messagePrefix() + " §c玩家 " + p.getName() + " 因人机验证超时被踢出服务器，本轮题目作废。");
-                    kickLegacy(p, "人机验证超时");
+                    kickLegacy(p, msg("kick-verify-timeout", "人机验证超时", null));
                 } else {
                     getLogger().warning("人机验证超时（" + verifyTimeoutSeconds + "s），玩家已离线，自动解锁并作废本轮题目");
                     broadcastLegacy(messagePrefix() + " §c人机验证超时，本轮题目作废。");
@@ -909,7 +909,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             resetStreak(player.getUniqueId());
             clearQuestionState();
             broadcastLegacy(messagePrefix() + " §c玩家 §f" + player.getName() + " §c因聊天消息间隔过短被踢出服务器。");
-            kickLegacy(player, "聊天消息间隔过短");
+            kickLegacy(player, msg("kick-chat-too-fast", "聊天消息间隔过短", null));
             return;
         }
 
@@ -1024,8 +1024,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                                 resetStreak(targetPlayer);
                                 clearQuestionState();
                                 if (p.isOnline()) {
-                                    broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
-                                    kickLegacy(p, "未通过人机验证");
+                                broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
+                                kickLegacy(p, msg("kick-verify-failed", "未通过人机验证", null));
                                 }
                             }
                         });
@@ -1065,7 +1065,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private void celebrate(Player winner, double earned) {
         if (!celebrateEnabled) return;
         try {
-            String sub = celebrateSubtitle.replace("{reward}", String.format("%.0f", earned));
+            String sub = celebrateSubtitle.replace("{reward}", String.format(Locale.ROOT, "%.0f", earned));
             if (earned <= 0.0) sub = "";
             showLegacyTitle(winner, celebrateTitle.replace('&', '§'), sub.replace('&', '§'));
         } catch (Throwable t) {
@@ -1409,12 +1409,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             boolean adminCmd = sub.equals("start") || sub.equals("stop") || sub.equals("question")
                     || sub.equals("q") || sub.equals("reload");
             if (!adminCmd) {
-                sender.sendMessage("§c未知子命令: " + sub);
+                sender.sendMessage(msg("unknown-command", "&c未知子命令: {arg}", sub));
                 sendHelp(sender, label);
                 return true;
             }
             if (!sender.hasPermission("letmeask.admin")) {
-                sender.sendMessage("§c你没有权限执行此命令 (letmeask.admin)");
+                sender.sendMessage(msg("no-permission", "&c你没有权限执行此命令 (letmeask.admin)", null));
                 return true;
             }
             switch (sub) {
@@ -1424,7 +1424,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                         publishQuestion();
                         nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
                     }
-                    sender.sendMessage("§a已启动定时出题");
+                    sender.sendMessage(msg("started", "&a已启动定时出题", null));
                     return true;
                 case "stop":
                     stopTask();
@@ -1432,17 +1432,17 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     if (currentQuestion != null || verifying) {
                         if (verifyingPlayer != null) resetStreak(verifyingPlayer);
                         clearQuestionState();
-                        sender.sendMessage("§c已停止定时出题（当前题目已作废）");
+                        sender.sendMessage(msg("stopped-with-question", "&c已停止定时出题（当前题目已作废）", null));
                     } else {
-                        sender.sendMessage("§c已停止定时出题");
+                        sender.sendMessage(msg("stopped", "&c已停止定时出题", null));
                     }
                     return true;
                 case "question":
                 case "q": {
                     boolean force = args.length > 1 && args[1].equalsIgnoreCase("force");
                     boolean ok = postNewQuestion(force);
-                    if (ok) sender.sendMessage("§a已发布新题目");
-                    else sender.sendMessage("§c无法发布新题目（已有题目/正在验证/已暂停）。使用 /letmeask question force 可强制发布");
+                    if (ok) sender.sendMessage(msg("question-posted", "&a已发布新题目", null));
+                    else sender.sendMessage(msg("question-blocked", "&c无法发布新题目（已有题目/正在验证/已暂停）。使用 /letmeask question force 可强制发布", null));
                     return true;
                 }
                 case "reload": {
@@ -1451,13 +1451,13 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     if (verifying) {
                         if (verifyingPlayer != null) resetStreak(verifyingPlayer);
                         clearQuestionState();
-                        sender.sendMessage("§e重载时存在未完成的验证，已作废本轮题目");
+                        sender.sendMessage(msg("reload-dropped-verify", "&e重载时存在未完成的验证，已作废本轮题目", null));
                     }
                     // restart scheduler to pick up interval changes
                     startTask();
                     startLeaderboardTask(); // 排行榜广播配置也可能变了，一并重启
-                    if (ok) sender.sendMessage("§a已重载配置(base.yml 与 questions.yml)");
-                    else sender.sendMessage("§e配置已重载，但新题库为空，已保留旧题库继续运行");
+                    if (ok) sender.sendMessage(msg("reloaded", "&a已重载配置(base.yml 与 questions.yml)", null));
+                    else sender.sendMessage(msg("reloaded-empty", "&e配置已重载，但新题库为空，已保留旧题库继续运行", null));
                     return true;
                 }
             }
@@ -1491,7 +1491,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(" 人机验证锁定: " + (verifying ? "§c是" : "§a否"));
             sender.sendMessage(" 累计出题: §f" + totalAsked + " §7已答对: §f" + totalAnswered);
             if (economyAvailable) {
-                sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format("%.2f", getBalanceOf(payerDisplay)) + ")");
+                sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format(Locale.ROOT, "%.2f", getBalanceOf(payerDisplay)) + ")");
                 sender.sendMessage(" 经济后端: §f" + (economyProviderName != null ? economyProviderName : "未知")
                         + (payerIsServer && !economyBankSupport ? " §7(无银行账户，按账户名扣款)" : ""));
             } else {
@@ -1525,7 +1525,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             int correct = totalCorrect.getOrDefault(key, 0);
             double earned = totalEarned.getOrDefault(key, 0.0);
             sender.sendMessage("§6玩家 §f" + display + " §6的答题统计:");
-            sender.sendMessage(" 答对: §f" + correct + " §7累计奖金: §e" + String.format("%.2f", earned));
+            sender.sendMessage(" 答对: §f" + correct + " §7累计奖金: §e" + String.format(Locale.ROOT, "%.2f", earned));
         }
 
         private void sendTop(CommandSender sender, String countArg) {
