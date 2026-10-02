@@ -5,10 +5,12 @@ Minecraft Paper/Spigot 抢答插件（答题发金币）。用户可见文案与
 ## 构建与验证
 
 - **唯一可用的构建命令：`mvn clean package`** → `target/LetMeAsk-1.1.0.jar`。需要联网（paper-api 为 papermc 仓库的 SNAPSHOT）。
-- **不要用 `gradle build`**：系统 Gradle 是 4.4.1，而 `build.gradle` 用了 toolchain / `archiveBaseName.set()`（需 6.7+），脚本求值阶段即失败；仓库也没有 `gradlew` wrapper。`build.gradle`、`settings.gradle`、`libs/`、`sources.txt` 是另一套构建的遗留物，`libs/*.jar` 是本地 paper-api 副本，改了 `pom.xml` 后不要同步改它们。
-- 没有测试、没有 lint/format 配置、没有 CI（`.github/modernize/` 只是两个 hook 脚本）。**编译通过就是全部验证手段。**
+- **不要用 `gradle build`**：系统 Gradle 是 4.4.1，而 `build.gradle` 用了 toolchain（需 6.7+），脚本求值阶段即失败；仓库也没有 `gradlew` wrapper。`build.gradle`、`settings.gradle`、`libs/`、`sources.txt` 是另一套构建的遗留物，`libs/*.jar` 是本地 paper-api 副本（pom 用不到，别改 pom 去配合它）。
+- 没有测试、没有 lint/format 配置。**编译通过就是全部本地验证手段。**
+- 版本号单一来源是 `pom.xml` 的 `<revision>`：`plugin.yml` 写 `${revision}` 由 Maven 资源过滤代入，`build.gradle` 用 `XmlParser` 读 pom，所以只改 pom（README 里手写的 jar 文件名例外）。注意 CI 会另加 `-<sha>` 短哈希后缀。
+- **推 `main` 会触发 `.github/workflows/build-release.yml`**：push 即 CI 构建并覆盖发布到 `latest` 这个滚动 release（预发布）。推之前先本地 `mvn clean package` 过一遍。
+- `.github/modernize/` 只是两个 hook 脚本，不是 CI。
 - `pom.xml` 目标 release 17；本机 JDK 25，可直接编译。
-- 版本号 `1.1.0` 无单一来源，散落在 `pom.xml`、`build.gradle`、`plugin.yml`、`README.md`（含 jar 文件名）。发版时要一起改。
 
 ## 代码结构
 
