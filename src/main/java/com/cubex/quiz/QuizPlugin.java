@@ -62,6 +62,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private double antiBotChatMinIntervalSeconds;
     private long verifyTimeoutSeconds;
     private double fuzzySimilarityThreshold = 0.75; // default similarity threshold (0-1)
+    private boolean leaderboardBroadcastEnabled = true;
+    private long leaderboardBroadcastMinutes = 60L;
+    private int leaderboardBroadcastCount = 10;
     private boolean celebrateEnabled = true;
     private String celebrateTitle = "§6§l答对了！";
     private String celebrateSubtitle = "§e+{reward} 金币";
@@ -98,6 +101,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private final Map<String, String> nameCache = new HashMap<>(); // UUID 字符串 -> 最后已知玩家名（top 榜免查）
     private volatile long totalAsked = 0L;
     private volatile long totalAnswered = 0L;
+    // 统计独立锁：saveStats 走异步线程，recordCorrect 走主线程；不用 this 锁，避免异步落盘阻塞主线程答题
+    private final Object statsLock = new Object();
 
     @Override
     public void onEnable() {
@@ -191,8 +196,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
      * false 时全量写回（5 分钟任务与关服时用）。
      * 调用方注意线程：定时任务走异步，onDisable 走主线程。
      */
-    private synchronized void saveStats(boolean incremental) {
+    private void saveStats(boolean incremental) {
         if (statsCfg == null || statsFile == null) return;
+        synchronized (statsLock) {
         try {
             statsCfg.set("total-asked", totalAsked);
             statsCfg.set("total-answered", totalAnswered);
@@ -220,6 +226,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         } catch (Exception ex) {
             getLogger().log(Level.WARNING, "保存 stats.yml 失败", ex);
         }
+        } // synchronized (statsLock)
     }
 
     /** 全量保存（关服与 5 分钟任务用）。 */
@@ -229,39 +236,48 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     /**
      * 记录一次答对：累计次数与实发金额（0 奖励/自答/无 Vault 时金额为 0 也计数）。
-     * synchronized：awardWinner 走主线程，saveStats 走异步定时任务，需与保存互斥。
+     * statsLock：awardWinner 走主线程，saveStats 走异步定时任务，需与保存互斥。
      */
-    private synchronized void recordCorrect(Player player, double earned) {
-        String key = player.getUniqueId().toString();
-        totalCorrect.merge(key, 1, Integer::sum);
-        if (earned > 0.0) totalEarned.merge(key, earned, Double::sum);
-        else totalEarned.putIfAbsent(key, 0.0);
-        if (player.getName() != null) nameCache.put(key, player.getName());
-        statsDirty.add(key);
-        totalAnswered++;
+    private void recordCorrect(Player player, double earned) {
+        synchronized (statsLock) {
+            String key = player.getUniqueId().toString();
+            totalCorrect.merge(key, 1, Integer::sum);
+            if (earned > 0.0) totalEarned.merge(key, earned, Double::sum);
+            else totalEarned.putIfAbsent(key, 0.0);
+            if (player.getName() != null) nameCache.put(key, player.getName());
+            statsDirty.add(key);
+            totalAnswered++;
+        }
     }
 
     /**
      * UUID 反查最后已知玩家名：先读内存缓存，未命中再查 Bukkit（UUID 版走内存映射，不碰磁盘）。
      * 仍无则回退显示 UUID 前 8 位。
-     * synchronized：top 命令可能与 recordCorrect/saveStats 并发读写 nameCache。
+     * Bukkit 查询放锁外：只做缓存读写加锁，避免拖长临界区。
      */
-    private synchronized String displayNameOf(String uuidKey) {
-        String cached = nameCache.get(uuidKey);
-        if (cached != null) return cached;
+    private String displayNameOf(String uuidKey) {
+        synchronized (statsLock) {
+            String cached = nameCache.get(uuidKey);
+            if (cached != null) return cached;
+        }
+        String found = null;
         try {
             org.bukkit.OfflinePlayer off = Bukkit.getOfflinePlayer(java.util.UUID.fromString(uuidKey));
-            if (off.getName() != null) {
-                nameCache.put(uuidKey, off.getName());
-                return off.getName();
-            }
+            found = off.getName();
         } catch (IllegalArgumentException ignored) {}
+        if (found != null) {
+            cacheName(uuidKey, found);
+            return found;
+        }
         return uuidKey.length() > 8 ? uuidKey.substring(0, 8) : uuidKey;
     }
 
     /** 线程安全地缓存玩家名（sendStats 走命令线程，直接写 map 会与异步保存竞态）。 */
-    private synchronized void cacheName(String uuidKey, String name) {
-        if (uuidKey != null && name != null) nameCache.put(uuidKey, name);
+    private void cacheName(String uuidKey, String name) {
+        if (uuidKey == null || name == null) return;
+        synchronized (statsLock) {
+            nameCache.put(uuidKey, name);
+        }
     }
 
 
@@ -295,6 +311,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         verifyTimeoutSeconds = Math.max(10L, baseCfg.getLong("verify-timeout-seconds", 120L));
         fuzzySimilarityThreshold = Math.min(1.0, Math.max(0.0,
                 baseCfg.getDouble("fuzzy-similarity-threshold", fuzzySimilarityThreshold)));
+        leaderboardBroadcastEnabled = baseCfg.getBoolean("leaderboard-broadcast.enabled", true);
+        leaderboardBroadcastMinutes = Math.max(1L, baseCfg.getLong("leaderboard-broadcast.minutes", 60L));
+        leaderboardBroadcastCount = Math.min(20, Math.max(1, baseCfg.getInt("leaderboard-broadcast.count", 10)));
         celebrateEnabled = baseCfg.getBoolean("celebrate.enabled", true);
         celebrateTitle = baseCfg.getString("celebrate.title", "§6§l答对了！");
         celebrateSubtitle = baseCfg.getString("celebrate.subtitle", "§e+{reward} 金币");
@@ -410,14 +429,17 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private void startLeaderboardTask() {
         if (leaderboardTask != null && !leaderboardTask.isCancelled()) {
             leaderboardTask.cancel();
+            leaderboardTask = null;
         }
-        long oneHourTicks = 60L * 60L * 20L;
+        if (!leaderboardBroadcastEnabled) return; // 关闭定时广播
+        long periodTicks = Math.max(1L, leaderboardBroadcastMinutes) * 60L * 20L;
+        final int count = Math.min(20, Math.max(1, leaderboardBroadcastCount));
         leaderboardTask = new BukkitRunnable() {
             @Override
             public void run() {
-                broadcastTop(10);
+                broadcastTop(count);
             }
-        }.runTaskTimer(this, oneHourTicks, oneHourTicks);
+        }.runTaskTimer(this, periodTicks, periodTicks);
     }
 
     private void broadcastTop(int count) {
@@ -656,7 +678,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             double bal = getBalanceOf(payerDisplay);
             if (bal >= rewardAmount) {
                 paused = false;
-                broadcastLegacy(messagePrefix() + " §a资金已足额，恢复出题。当前余额: " + bal + "，预计还可以奖励" + (bal / rewardAmount) + "次。");
+                String countMsg = rewardAmount > 0.0
+                        ? "，预计还可以奖励" + (int) (bal / rewardAmount) + "次。"
+                        : "。";
+                broadcastLegacy(messagePrefix() + " §a资金已足额，恢复出题。当前余额: " + bal + countMsg);
             } else {
                 return;
             }
@@ -721,14 +746,18 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         if (snapshot == null || verifying) return;
 
         String msg = event.getMessage().trim();
-        String normalizedMsg = normalize(msg);
         Player player = event.getPlayer();
         long messageTime = System.currentTimeMillis();
-        boolean correctAnswer = msg.length() <= 100 && matchesAny(normalizedMsg, snapshot.normalizedAnswers);
-        boolean chatTooFast = recordChatMessage(player.getUniqueId(), snapshot.id, messageTime, correctAnswer);
 
-        // 超长刷屏消息直接拒绝，避免无意义的模糊匹配计算
-        if (msg.length() > 100) return;
+        // 超长刷屏消息直接拒绝：仍计入聊天频率统计，但跳过归一化与模糊匹配
+        if (msg.length() > 100) {
+            recordChatMessage(player.getUniqueId(), snapshot.id, messageTime, false);
+            return;
+        }
+
+        String normalizedMsg = normalize(msg);
+        boolean correctAnswer = matchesAny(normalizedMsg, snapshot.normalizedAnswers);
+        boolean chatTooFast = recordChatMessage(player.getUniqueId(), snapshot.id, messageTime, correctAnswer);
 
         if (correctAnswer) {
             // 切主线程发奖，携带题目 id：若题目已轮换/作废则拒绝，防止旧题答案领走新题奖励
@@ -746,7 +775,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                                       boolean correctAnswer) {
         synchronized (recentChatMessages) {
             ChatHistory history = recentChatMessages.get(playerId);
-            if (history == null || !history.questionId.equals(questionId)) {
+            if (history == null || !Objects.equals(history.questionId, questionId)) {
                 history = new ChatHistory(questionId);
                 recentChatMessages.put(playerId, history);
             }
@@ -1275,6 +1304,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     }
                     // restart scheduler to pick up interval changes
                     startTask();
+                    startLeaderboardTask(); // 排行榜广播配置也可能变了，一并重启
                     if (ok) sender.sendMessage("§a已重载配置(base.yml 与 questions.yml)");
                     else sender.sendMessage("§e配置已重载，但新题库为空，已保留旧题库继续运行");
                     return true;

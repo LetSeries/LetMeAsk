@@ -44,7 +44,7 @@
 | `/letmeask reload` | letmeask.admin | 重载配置文件 |
 
 所有子命令均支持简写 `/lma`（如 `/lma top`、`/lma stats`）。
-排行榜也会每小时在游戏内全局广播一次。
+排行榜会按 `leaderboard-broadcast` 配置定时在游戏内全局广播（默认每小时前 10 名，`enabled: false` 可关闭）。
 
 ## 配置
 
@@ -77,6 +77,12 @@ verify-timeout-seconds: 120
 
 # 答案模糊匹配阈值（0-1，越高越严格；1.0=精确匹配）
 fuzzy-similarity-threshold: 0.75
+
+# 定时广播排行榜（enabled=false 关闭；minutes 最小 1；count 最多 20）
+leaderboard-broadcast:
+  enabled: true
+  minutes: 60
+  count: 10
 
 # 答对庆祝：Title 只发给答对者，音效全服可听（sound=none 关闭音效）
 celebrate:
