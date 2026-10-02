@@ -362,11 +362,18 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return !usingFallback || !questions.isEmpty();
     }
 
+    /** 单题权重上限：防止极端配置下加权求和 int 溢出。 */
+    private static final int MAX_WEIGHT = 10000;
+
+    private static int clampWeight(int w) {
+        return Math.min(MAX_WEIGHT, Math.max(1, w));
+    }
+
     /**
      * 解析题库条目。支持两种格式（可混用）：
      * <ul>
      *   <li>纯字符串: "题目=答案1|答案2"，权重默认为 1</li>
-     *   <li>map: {q: "题目", a: "答案1|答案2", weight: 3}，weight 越大越容易被抽中（最小 1）</li>
+     *   <li>map: {q: "题目", a: "答案1|答案2", weight: 3}，weight 越大越容易被抽中（1~10000）</li>
      * </ul>
      * 非法行与重复题目跳过。
      */
@@ -374,27 +381,33 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         List<Question> parsed = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (Object entry : raw) {
-            String line;
+            String q;
+            String a;
             int weight = 1;
             if (entry instanceof Map) {
                 Map<?, ?> map = (Map<?, ?>) entry;
                 Object qObj = map.get("q");
                 Object aObj = map.get("a");
                 if (qObj == null || aObj == null) continue;
-                line = qObj + "=" + aObj;
+                // map 格式直取 q/a：题目本身含 = 号时（如数学题）拼接再切分会切错
+                q = qObj.toString().trim();
+                a = aObj.toString().trim();
                 Object wObj = map.get("weight");
-                if (wObj instanceof Number) weight = Math.max(1, ((Number) wObj).intValue());
+                if (wObj instanceof Number) {
+                    weight = clampWeight(((Number) wObj).intValue());
+                } else if (wObj != null) {
+                    getLogger().warning("题目权重不是数字，已按 1 处理: " + q);
+                }
             } else if (entry instanceof String) {
-                line = (String) entry;
+                String line = (String) entry;
+                String[] parts = line.split("=", 2);
+                if (parts.length < 2) parts = line.split(":", 2);
+                if (parts.length < 2) continue;
+                q = parts[0].trim();
+                a = parts[1].trim();
             } else {
                 continue;
             }
-            if (line == null) continue;
-            String[] parts = line.split("=", 2);
-            if (parts.length < 2) parts = line.split(":", 2);
-            if (parts.length < 2) continue;
-            String q = parts[0].trim();
-            String a = parts[1].trim();
             if (q.isEmpty() || a.isEmpty()) continue;
             if (!seen.add(q)) {
                 getLogger().warning("题库存在重复题目，已跳过: " + q);
@@ -604,11 +617,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return q != null ? q : questions.get(random.nextInt(questions.size()));
     }
 
-    /** 加权随机：权重越大越容易被抽中。 */
+    /** 加权随机：权重越大越容易被抽中（long 求和，极端题库也不溢出）。 */
     private Question pickWeighted() {
-        int total = 0;
+        long total = 0;
         for (Question q : questions) total += q.weight;
-        int r = random.nextInt(total);
+        if (total <= 0) return questions.get(questions.size() - 1);
+        long r = (random.nextLong() & Long.MAX_VALUE) % total;
         for (Question q : questions) {
             r -= q.weight;
             if (r < 0) return q;
@@ -1440,7 +1454,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             List<String> norm = new ArrayList<>(as.size());
             for (String a : as) norm.add(normalize(a));
             this.normalizedAnswers = Collections.unmodifiableList(norm);
-            this.weight = Math.max(1, w);
+            this.weight = clampWeight(w);
         }
 
         /** 公布答案时展示的首选答案。 */
