@@ -106,6 +106,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile long totalAnswered = 0L;
     // 统计独立锁：saveStats 走异步线程，recordCorrect 走主线程；不用 this 锁，避免异步落盘阻塞主线程答题
     private final Object statsLock = new Object();
+    // 落盘独占锁：快照在 statsLock 下拷贝，磁盘 IO 在此锁下串行，主线程发奖全程不被 IO 阻塞
+    private final Object statsSaveLock = new Object();
+    // 答题专用锁：handleCorrectAnswer 不再用 synchronized 方法，避免占用插件 this 监视器
+    private final Object answerLock = new Object();
 
     @Override
     public void onEnable() {
@@ -198,38 +202,67 @@ public class QuizPlugin extends JavaPlugin implements Listener {
      * 写回 stats.yml。incremental=true 时只写 dirty 玩家+累计计数（30s 高频任务用），
      * false 时全量写回（5 分钟任务与关服时用）。
      * 调用方注意线程：定时任务走异步，onDisable 走主线程。
+     * 快照在 statsLock 下拷贝后释放锁，磁盘 IO 在 statsSaveLock 下串行——
+     * 主线程 recordCorrect 只被短暂拷贝阻塞，不再被慢 IO 卡住。
      */
     private void saveStats(boolean incremental) {
         if (statsCfg == null || statsFile == null) return;
+        final long asked;
+        final long answered;
+        final Map<String, Integer> correctSnap;
+        final Map<String, Double> earnedSnap;
+        final Map<String, String> nameSnap;
+        final Set<String> dirtySnap;
         synchronized (statsLock) {
-        try {
-            statsCfg.set("total-asked", totalAsked);
-            statsCfg.set("total-answered", totalAnswered);
+            if (incremental && statsDirty.isEmpty()) return; // 无变更时连文件都不碰
+            asked = totalAsked;
+            answered = totalAnswered;
             if (incremental) {
-                if (statsDirty.isEmpty()) return; // 无变更时连文件都不碰
-                for (String uuid : statsDirty) {
-                    String key = "players." + uuid;
-                    statsCfg.set(key + ".correct", totalCorrect.getOrDefault(uuid, 0));
-                    statsCfg.set(key + ".earned", totalEarned.getOrDefault(uuid, 0.0));
+                dirtySnap = new HashSet<>(statsDirty);
+                correctSnap = new HashMap<>();
+                earnedSnap = new HashMap<>();
+                nameSnap = new HashMap<>();
+                for (String uuid : dirtySnap) {
+                    correctSnap.put(uuid, totalCorrect.getOrDefault(uuid, 0));
+                    earnedSnap.put(uuid, totalEarned.getOrDefault(uuid, 0.0));
                     String n = nameCache.get(uuid);
-                    if (n != null) statsCfg.set(key + ".name", n);
+                    if (n != null) nameSnap.put(uuid, n);
                 }
                 statsDirty.clear();
             } else {
-                for (Map.Entry<String, Integer> e : totalCorrect.entrySet()) {
-                    String key = "players." + e.getKey();
-                    statsCfg.set(key + ".correct", e.getValue());
-                    statsCfg.set(key + ".earned", totalEarned.getOrDefault(e.getKey(), 0.0));
-                    String n = nameCache.get(e.getKey());
-                    if (n != null) statsCfg.set(key + ".name", n);
-                }
+                dirtySnap = null;
+                correctSnap = new HashMap<>(totalCorrect);
+                earnedSnap = new HashMap<>(totalEarned);
+                nameSnap = new HashMap<>(nameCache);
                 statsDirty.clear();
             }
-            statsCfg.save(statsFile);
-        } catch (Exception ex) {
-            getLogger().log(Level.WARNING, "保存 stats.yml 失败", ex);
         }
-        } // synchronized (statsLock)
+        synchronized (statsSaveLock) {
+            try {
+                statsCfg.set("total-asked", asked);
+                statsCfg.set("total-answered", answered);
+                if (incremental) {
+                    for (String uuid : dirtySnap) {
+                        String key = "players." + uuid;
+                        statsCfg.set(key + ".correct", correctSnap.getOrDefault(uuid, 0));
+                        statsCfg.set(key + ".earned", earnedSnap.getOrDefault(uuid, 0.0));
+                        String n = nameSnap.get(uuid);
+                        if (n != null) statsCfg.set(key + ".name", n);
+                    }
+                } else {
+                    for (Map.Entry<String, Integer> e : correctSnap.entrySet()) {
+                        String key = "players." + e.getKey();
+                        statsCfg.set(key + ".correct", e.getValue());
+                        statsCfg.set(key + ".earned", earnedSnap.getOrDefault(e.getKey(), 0.0));
+                        String n = nameSnap.get(e.getKey());
+                        if (n != null) statsCfg.set(key + ".name", n);
+                    }
+                }
+                statsCfg.save(statsFile);
+            } catch (Exception ex) {
+                getLogger().log(Level.WARNING, "保存 stats.yml 失败", ex);
+            }
+        }
     }
 
     /** 全量保存（关服与 5 分钟任务用）。 */
@@ -859,7 +892,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
     }
 
-    private synchronized void handleCorrectAnswer(Player player, java.util.UUID questionId, boolean chatTooFast) {
+    // 答题判定用专用 answerLock，不占用插件 this 监视器（之前 synchronized 方法会阻塞其他同步块）。
+    // 注意：判定→消耗必须在同一锁内原子完成，不可分段，否则两名玩家可同时通过判定导致重复发奖。
+    private void handleCorrectAnswer(Player player, java.util.UUID questionId, boolean chatTooFast) {
+        synchronized (answerLock) {
+            handleCorrectAnswerLocked(player, questionId, chatTooFast);
+        }
+    }
+
+    private void handleCorrectAnswerLocked(Player player, java.util.UUID questionId, boolean chatTooFast) {
         Question snapshot = currentQuestion;
         if (snapshot == null || verifying) return; // double-check
         if (snapshot.id == null || !snapshot.id.equals(questionId)) return; // 题目已轮换或作废
@@ -1500,6 +1541,17 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (args.length == 2 && (args[0].equalsIgnoreCase("question") || args[0].equalsIgnoreCase("q"))) {
                 String prefix = args[1].toLowerCase(Locale.ROOT);
                 return "force".startsWith(prefix) ? Collections.singletonList("force") : Collections.emptyList();
+            }
+
+            if (args.length == 2 && args[0].equalsIgnoreCase("stats")) {
+                String prefix = args[1].toLowerCase(Locale.ROOT);
+                List<String> names = new ArrayList<>();
+                for (Player p : Bukkit.getOnlinePlayers()) {
+                    if (p.getName() != null && p.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) {
+                        names.add(p.getName());
+                    }
+                }
+                return names;
             }
 
             return Collections.emptyList();
