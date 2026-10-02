@@ -44,6 +44,7 @@
 | `/letmeask reload` | letmeask.admin | 重载配置文件 |
 
 所有子命令均支持简写 `/lma`（如 `/lma top`、`/lma stats`）。
+排行榜也会每小时在游戏内全局广播一次。
 
 ## 配置
 

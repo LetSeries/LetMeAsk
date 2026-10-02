@@ -83,6 +83,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     // scheduler handle
     private BukkitTask tickerTask;
+    private BukkitTask leaderboardTask;
     private BukkitTask statsSaveTask;
     private final Map<java.util.UUID, Integer> correctAnswerCounts = new HashMap<>();
     private final Map<java.util.UUID, Long> lastCorrectTimes = new HashMap<>();
@@ -137,6 +138,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         startTask();
 
         loadStats();
+        startLeaderboardTask();
         // 统计落盘：30 秒增量写（只写有变更的玩家），每 10 次做一次全量（约 5 分钟）
         statsSaveTask = new BukkitRunnable() {
             private int runs = 0;
@@ -152,6 +154,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     @Override
     public void onDisable() {
         stopTask();
+        if (leaderboardTask != null && !leaderboardTask.isCancelled()) {
+            leaderboardTask.cancel();
+            leaderboardTask = null;
+        }
         if (statsSaveTask != null && !statsSaveTask.isCancelled()) {
             statsSaveTask.cancel();
             statsSaveTask = null;
@@ -399,6 +405,46 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 }
             }
         }.runTaskTimer(this, 20L, 20L); // 1s 粒度，保证超时与验证兜底准时
+    }
+
+    private void startLeaderboardTask() {
+        if (leaderboardTask != null && !leaderboardTask.isCancelled()) {
+            leaderboardTask.cancel();
+        }
+        long oneHourTicks = 60L * 60L * 20L;
+        leaderboardTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                broadcastTop(10);
+            }
+        }.runTaskTimer(this, oneHourTicks, oneHourTicks);
+    }
+
+    private void broadcastTop(int count) {
+        List<String> messages = topMessages(count);
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            for (String message : messages) {
+                player.sendMessage(message);
+            }
+        }
+    }
+
+    private List<String> topMessages(int count) {
+        List<Map.Entry<String, Integer>> sorted = new ArrayList<>(totalCorrect.entrySet());
+        sorted.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+        if (sorted.isEmpty()) {
+            return Collections.singletonList(msg("no-records", "&e暂无答题记录", null));
+        }
+
+        List<String> messages = new ArrayList<>();
+        messages.add("§6答题排行榜 §7(前 " + Math.min(count, sorted.size()) + " 名):");
+        int rank = 0;
+        for (Map.Entry<String, Integer> entry : sorted) {
+            if (++rank > count) break;
+            messages.add(" §e" + rank + ". §f" + displayNameOf(entry.getKey()) + " §7答对 §f" + entry.getValue()
+                    + " §7奖金 §e" + String.format("%.2f", totalEarned.getOrDefault(entry.getKey(), 0.0)));
+        }
+        return messages;
     }
 
     private volatile String cachedPrefix = null; // prefix 缓存：reload 时失效
@@ -1301,19 +1347,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     sender.sendMessage(msg("invalid-count", "&c数量参数无效，使用默认值 10", null));
                 }
             }
-            List<Map.Entry<String, Integer>> sorted = new ArrayList<>(totalCorrect.entrySet());
-            sorted.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
-            if (sorted.isEmpty()) {
-                sender.sendMessage(msg("no-records", "&e暂无答题记录", null));
-                return;
-            }
-            sender.sendMessage("§6答题排行榜 §7(前 " + Math.min(count, sorted.size()) + " 名):");
-            int rank = 0;
-            for (Map.Entry<String, Integer> e : sorted) {
-                if (++rank > count) break;
-                sender.sendMessage(" §e" + rank + ". §f" + displayNameOf(e.getKey()) + " §7答对 §f" + e.getValue()
-                        + " §7奖金 §e" + String.format("%.2f", totalEarned.getOrDefault(e.getKey(), 0.0)));
-            }
+            topMessages(count).forEach(sender::sendMessage);
         }
 
         @Override
