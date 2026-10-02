@@ -463,13 +463,19 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         List<String> messages = topMessages(count);
         for (Player player : Bukkit.getOnlinePlayers()) {
             for (String message : messages) {
-                player.sendMessage(message);
+                sendLegacy(player, message);
             }
         }
     }
 
     private List<String> topMessages(int count) {
-        List<Map.Entry<String, Integer>> sorted = new ArrayList<>(totalCorrect.entrySet());
+        // 快照拷贝：统计 Map 受 statsLock 保护，异步落盘线程会并发读写，直接遍历会抛 CME
+        final List<Map.Entry<String, Integer>> sorted;
+        final Map<String, Double> earned;
+        synchronized (statsLock) {
+            sorted = new ArrayList<>(totalCorrect.entrySet());
+            earned = new HashMap<>(totalEarned);
+        }
         sorted.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
         if (sorted.isEmpty()) {
             return Collections.singletonList(msg("no-records", "&e暂无答题记录", null));
@@ -481,7 +487,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         for (Map.Entry<String, Integer> entry : sorted) {
             if (++rank > count) break;
             messages.add(" §e" + rank + ". §f" + displayNameOf(entry.getKey()) + " §7答对 §f" + entry.getValue()
-                    + " §7奖金 §e" + String.format("%.2f", totalEarned.getOrDefault(entry.getKey(), 0.0)));
+                    + " §7奖金 §e" + String.format("%.2f", earned.getOrDefault(entry.getKey(), 0.0)));
         }
         return messages;
     }
@@ -506,6 +512,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     @SuppressWarnings("deprecation")
     private void kickLegacy(Player player, String reason) {
         player.kickPlayer(reason);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void sendLegacy(Player player, String message) {
+        player.sendMessage(message);
     }
 
     @SuppressWarnings("deprecation")
