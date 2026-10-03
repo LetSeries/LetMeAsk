@@ -495,6 +495,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     }
 
     private void broadcastTop(int count) {
+        // 空榜时跳过定时广播：手动 /top 仍提示“暂无记录”，但别每小时刷屏打扰玩家
+        synchronized (statsLock) {
+            if (totalCorrect.isEmpty()) return;
+        }
         List<String> messages = topMessages(count);
         for (Player player : Bukkit.getOnlinePlayers()) {
             for (String message : messages) {
@@ -1089,7 +1093,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private void celebrate(Player winner, double earned) {
         if (!celebrateEnabled) return;
         try {
-            String sub = celebrateSubtitle.replace("{reward}", String.format(Locale.ROOT, "%.0f", earned));
+            String sub = celebrateSubtitle.replace("{reward}", String.format(Locale.ROOT, "%,.2f", earned));
             if (earned <= 0.0) sub = "";
             showLegacyTitle(winner, celebrateTitle.replace('&', '§'), sub.replace('&', '§'));
         } catch (Throwable t) {
