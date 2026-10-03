@@ -563,6 +563,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return s.replace('&', '§');
     }
 
+    /** 双占位版本：{cmd} 为命令别名（如 lma），{arg} 为其他参数。 */
+    private String msg2(String key, String def, String cmd, String arg) {
+        String s = baseCfg == null ? def : baseCfg.getString("messages." + key, def);
+        if (cmd != null) s = s.replace("{cmd}", cmd);
+        if (arg != null) s = s.replace("{arg}", arg);
+        return s.replace('&', '§');
+    }
+
     private void resolvePayer(String payer) {
         payerOffline = null;
         payerIsServer = false;
@@ -1454,33 +1462,53 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         private void sendHelp(CommandSender sender, String label) {
             // 用玩家实际输入的别名展示（如 /lma 进来就显示 /lma），复制即用
             String cmd = (label == null || label.isEmpty()) ? "letmeask" : label;
-            sender.sendMessage("§6§m----------§r §6LetMeAsk 帮助 §6§m----------");
-            sender.sendMessage("§e/" + cmd + " help §7- 显示此帮助");
-            sender.sendMessage("§e/" + cmd + " top [数量] §7- 答题排行榜（默认 10，最多 20）");
-            sender.sendMessage("§e/" + cmd + " stats [玩家] §7- 查看答题统计（默认自己）");
-            sender.sendMessage("§e/" + cmd + " status §7- 查看插件状态");
+            sender.sendMessage(msg("help-header", "&6&m----------&r &6LetMeAsk 帮助 &6&m----------", null));
+            sender.sendMessage(msg2("help-help", "&e/{cmd} help &7- 显示此帮助", cmd, null));
+            sender.sendMessage(msg2("help-top", "&e/{cmd} top [数量] &7- 答题排行榜（默认 10，最多 20）", cmd, null));
+            sender.sendMessage(msg2("help-stats", "&e/{cmd} stats [玩家] &7- 查看答题统计（默认自己）", cmd, null));
+            sender.sendMessage(msg2("help-status", "&e/{cmd} status &7- 查看插件状态", cmd, null));
             if (sender.hasPermission("letmeask.admin")) {
-                sender.sendMessage("§6管理命令:");
-                sender.sendMessage("§e/" + cmd + " start §7- 启动定时出题");
-                sender.sendMessage("§e/" + cmd + " stop §7- 停止定时出题");
-                sender.sendMessage("§e/" + cmd + " question [force] §7- 发布新题目（force 强制）");
-                sender.sendMessage("§e/" + cmd + " reload §7- 重载配置");
+                sender.sendMessage(msg("help-admin-header", "&6管理命令:", null));
+                sender.sendMessage(msg2("help-start", "&e/{cmd} start &7- 启动定时出题", cmd, null));
+                sender.sendMessage(msg2("help-stop", "&e/{cmd} stop &7- 停止定时出题", cmd, null));
+                sender.sendMessage(msg2("help-question", "&e/{cmd} question [force] &7- 发布新题目（force 强制）", cmd, null));
+                sender.sendMessage(msg2("help-reload", "&e/{cmd} reload &7- 重载配置", cmd, null));
             }
-            sender.sendMessage("§6§m--------------------------------");
+            sender.sendMessage(msg("help-footer", "&6&m--------------------------------", null));
         }
 
         private void sendStatus(CommandSender sender) {
-            sender.sendMessage("§6LetMeAsk 状态:");
-            sender.sendMessage(" 自动出题: " + (tickerTask != null ? "§a运行中" : "§c已停止"));
-            sender.sendMessage(" 题库数量: §f" + questions.size());
-            sender.sendMessage(" 当前题目: " + (currentQuestion != null ? currentQuestion.question : "无"));
-            sender.sendMessage(" 暂停(余额不足): " + (paused ? "§c是" : "§a否"));
-            sender.sendMessage(" 人机验证锁定: " + (verifying ? "§c是" : "§a否"));
-            sender.sendMessage(" 累计出题: §f" + totalAsked + " §7已答对: §f" + totalAnswered);
+            sender.sendMessage(msg("status-header", "&6LetMeAsk 状态:", null));
+            sender.sendMessage(msg("status-task", " 自动出题: {arg}",
+                    tickerTask != null ? "§a运行中" : "§c已停止"));
+            sender.sendMessage(msg("status-questions", " 题库数量: §f{arg}", String.valueOf(questions.size())));
+            sender.sendMessage(msg("status-current", " 当前题目: {arg}",
+                    currentQuestion != null ? currentQuestion.question : "无"));
+            sender.sendMessage(msg("status-paused", " 暂停(余额不足): {arg}", paused ? "§c是" : "§a否"));
+            sender.sendMessage(msg("status-verifying", " 人机验证锁定: {arg}", verifying ? "§c是" : "§a否"));
+            sender.sendMessage(msg2("status-total", " 累计出题: §f{cmd} §7已答对: §f{arg}",
+                    String.valueOf(totalAsked), String.valueOf(totalAnswered)));
             if (economyAvailable) {
-                sender.sendMessage(" 支付玩家: §f" + payerDisplay + " §7(余额: " + String.format(Locale.ROOT, "%,.2f", getBalanceOf(payerDisplay)) + ")");
-                sender.sendMessage(" 经济后端: §f" + (economyProviderName != null ? economyProviderName : "未知")
-                        + (payerIsServer && !economyBankSupport ? " §7(无银行账户，按账户名扣款)" : ""));
+                // 余额查询可能打 Vault 后端 IO，异步查完再回主线程输出，避免卡主线程
+                final String payer = payerDisplay;
+                Bukkit.getScheduler().runTaskAsynchronously(QuizPlugin.this, () -> {
+                    double bal;
+                    try {
+                        bal = getBalanceOf(payer);
+                    } catch (Throwable t) {
+                        bal = Double.NaN;
+                    }
+                    final double balance = bal;
+                    Bukkit.getScheduler().runTask(QuizPlugin.this, () -> {
+                        if (sender instanceof Player && !((Player) sender).isOnline()) return;
+                        String balText = Double.isNaN(balance)
+                                ? "§c查询失败"
+                                : String.format(Locale.ROOT, "%,.2f", balance);
+                        sender.sendMessage(" 支付玩家: §f" + payer + " §7(余额: " + balText + ")");
+                        sender.sendMessage(" 经济后端: §f" + (economyProviderName != null ? economyProviderName : "未知")
+                                + (payerIsServer && !economyBankSupport ? " §7(无银行账户，按账户名扣款)" : ""));
+                    });
+                });
             } else {
                 sender.sendMessage(" 经济系统: §e未检测到 Vault（纯公告模式，无货币奖励）");
             }
