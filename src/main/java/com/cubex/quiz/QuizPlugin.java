@@ -787,6 +787,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             Player p = verifyingPlayer == null ? null : Bukkit.getPlayer(verifyingPlayer);
             long elapsedMillis = System.currentTimeMillis() - verifyStartMillis;
             if (elapsedMillis >= verifyTimeoutSeconds * 1000L) {
+                // 注意：先清连击再清题目，与验证失败/刷屏踢人分支一致；
+                // 否则被踢玩家重进后连击残留，下次答对直接再触发验证
+                if (verifyingPlayer != null) resetStreak(verifyingPlayer);
                 if (p != null) {
                     getLogger().warning(p.getName() + "人机验证超时（" + verifyTimeoutSeconds + "s），自动解锁作废本轮题目，并踢出玩家");
                     broadcastLegacy(messagePrefix() + " §c玩家 " + p.getName() + " 因人机验证超时被踢出服务器，本轮题目作废。");
