@@ -23,14 +23,13 @@ import java.util.*;
 import java.util.logging.Level;
 
 /**
- * Quiz activity plugin (CubeX-compatible layout).
- * - Uses Vault for economy (recommended: CMI exposes Vault provider)
- * - Integrates with external HumanVerifyApi as in your example. If you have a different package
- *   for HumanVerifyApi, add the API dependency when compiling. If compilation fails, adjust imports
- *   to the correct package for your HumanVerify plugin.
+ * 抢答活动插件（CubeX 兼容布局）。
+ * - 经济走 Vault（推荐用 CMI 提供的 Vault 实现）。
+ * - 人机验证对接外部 HumanVerifyApi；若对方包名不同请自行调整。
+ *   注意不要把它们加进 pom 依赖，全部走反射调用以便优雅降级。
  */
 public class QuizPlugin extends JavaPlugin implements Listener {
-    // Vault economy provider (kept as Object to avoid compile-time dependency on Vault API)
+    // Vault 经济服务实例（用 Object 持有，避免编译期依赖 Vault API）
     private Object econ; // provider instance
     // 缓存 Vault Economy 的 Class 与 Method：发奖一次最多触发 9 次反射查询，缓存后只剩 invoke
     private Class<?> economyClass;
@@ -113,7 +112,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     @Override
     public void onEnable() {
-        // Ensure default resource files exist
+        // 释放默认配置文件（不存在时才写，不覆盖老服已有配置）
         saveResource("base.yml", false);
         saveResource("questions.yml", false);
 
@@ -536,7 +535,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return hit;
     }
 
-    // Keep Bukkit's legacy text APIs for compatibility with both Paper and Spigot.
+    // Bukkit 传统文本 API 兼容层，Paper 与 Spigot 通用。
     @SuppressWarnings("deprecation")
     private void broadcastLegacy(String message) {
         Bukkit.broadcastMessage(message);
@@ -1198,7 +1197,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return true;
     }
 
-    // Reflection helpers for interacting with economy provider without compile-time Vault dependency
+    // 经济反射调用辅助方法（无编译期 Vault 依赖，全部运行时反射）
     private double getBalanceOf(String who) {
         if (econ == null) return 0.0;
         if (payerIsServer && economyBankSupport) {
@@ -1243,10 +1242,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private Object depositTo(Player winner, double amount) {
         if (econ == null) return null;
         // 在线玩家优先走 OfflinePlayer 通道（UUID 精确，防改名错发）
-        try {
-            Object response = invokeEconomy("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, winner, amount);
-            if (response != null) return response;
-        } catch (Throwable ignored) {}
+        // 注意：invokeEconomy 内部已捕获全部异常，外层无需 try-catch
+        Object response = invokeEconomy("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, winner, amount);
+        if (response != null) return response;
         return depositTo(winner.getName(), amount);
     }
 
@@ -1260,37 +1258,26 @@ public class QuizPlugin extends JavaPlugin implements Listener {
      */
     private Object refundToPayer(double amount) {
         if (econ == null) return null;
-        try {
-            if (payerIsServer && economyBankSupport) {
-                Object response = invokeEconomy("bankDeposit", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
-                if (response != null) return response;
-            }
-            if (payerOffline != null && (payerUsesUuid || payerDisplay == null
-                    || (payerOffline.getName() != null && payerOffline.getName().equals(payerDisplay)))) {
-                try {
-                    Object response = invokeEconomy("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
-                    if (response != null) return response;
-                } catch (Throwable ignored) {}
-            }
-            try {
-                Object response = invokeEconomy("depositPlayer", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
-                if (response != null) return response;
-            } catch (Throwable ignored) {}
-        } catch (Throwable t) {
-            getLogger().log(Level.WARNING, "给账户充值时出错", t);
+        // 注意：invokeEconomy 内部已捕获全部异常并返回 null，外层无需 try-catch
+        if (payerIsServer && economyBankSupport) {
+            Object response = invokeEconomy("bankDeposit", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
+            if (response != null) return response;
         }
+        if (payerOffline != null && (payerUsesUuid || payerDisplay == null
+                || (payerOffline.getName() != null && payerOffline.getName().equals(payerDisplay)))) {
+            Object offlineResponse = invokeEconomy("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
+            if (offlineResponse != null) return offlineResponse;
+        }
+        Object response = invokeEconomy("depositPlayer", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
+        if (response != null) return response;
         return null;
     }
 
     /** 按账户名发奖（仅用于非出资人退款等兜底路径）。 */
     private Object depositTo(String who, double amount) {
         if (econ == null) return null;
-        try {
-            Object response = invokeEconomy("depositPlayer", new Class<?>[]{String.class, double.class}, who, amount);
-            if (response != null) return response;
-        } catch (Throwable t) {
-            getLogger().log(Level.WARNING, "给账户充值时出错", t);
-        }
+        Object response = invokeEconomy("depositPlayer", new Class<?>[]{String.class, double.class}, who, amount);
+        if (response != null) return response;
         return null;
     }
 
@@ -1378,7 +1365,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
     }
 
-    // Command handler
+    // 命令处理器
     private class QuizCommand implements CommandExecutor, TabCompleter {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -1570,7 +1557,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
     }
 
-    // Simple question holder (supports multiple accepted answers + weight)
+    // 题目数据（支持多答案与权重）
     private static class Question {
         final String question;
         final List<String> answers; // 任一匹配即算答对（原始文本，用于公布答案）
