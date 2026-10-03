@@ -575,7 +575,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return msg3(key, def, cmd, arg, null);
     }
 
-    /** 三占位版本：在 msg2 基础上加 {arg2}，用于需要两个数字参数的消息（如累计出题/答对）。 */
+    /**
+     * 三占位版本：在 msg2 基础上加 {arg2}，用于需要两个数字参数的消息（如累计出题/答对）。
+     * 兼容逻辑：cmd 为空时用 arg 回填 {cmd}（老服 base.yml 的 status-total 默认值曾借用 {cmd} 传累计出题数，
+     * saveResource 不覆盖旧文件，不能指望老服自动更新默认值）。
+     */
     private String msg3(String key, String def, String cmd, String arg, String arg2) {
         String s = baseCfg == null ? def : baseCfg.getString("messages." + key, def);
         if (cmd != null) {
@@ -1052,8 +1056,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                                 resetStreak(targetPlayer);
                                 clearQuestionState();
                                 if (p.isOnline()) {
-                                broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
-                                kickLegacy(p, msg("kick-verify-failed", "未通过人机验证", null));
+                                    broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
+                                    kickLegacy(p, msg("kick-verify-failed", "未通过人机验证", null));
                                 }
                             }
                         });
