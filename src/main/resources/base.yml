@@ -88,4 +88,4 @@ messages:
   status-current: " 当前题目: {arg}"
   status-paused: " 暂停(余额不足): {arg}"
   status-verifying: " 人机验证锁定: {arg}"
-  status-total: " 累计出题: §f{cmd} §7已答对: §f{arg}"
+  status-total: " 累计出题: §f{arg} §7已答对: §f{arg2}"

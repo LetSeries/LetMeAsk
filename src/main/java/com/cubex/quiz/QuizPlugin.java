@@ -32,8 +32,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     // Vault 经济服务实例（用 Object 持有，避免编译期依赖 Vault API）
     private Object econ; // provider instance
     // 缓存 Vault Economy 的 Class 与 Method：发奖一次最多触发 9 次反射查询，缓存后只剩 invoke
+    // ConcurrentHashMap：status 余额异步查询后，反射缓存不再是主线程独占；
+    // ConcurrentHashMap 不存 null，缺失的方法记在 missingMethods 里
     private Class<?> economyClass;
-    private final Map<String, Method> economyMethods = new HashMap<>();
+    private final Map<String, Method> economyMethods = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Set<String> missingMethods = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private final Random random = new Random();
 
@@ -565,9 +568,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     /** 双占位版本：{cmd} 为命令别名（如 lma），{arg} 为其他参数。 */
     private String msg2(String key, String def, String cmd, String arg) {
+        return msg3(key, def, cmd, arg, null);
+    }
+
+    /** 三占位版本：在 msg2 基础上加 {arg2}，用于需要两个数字参数的消息（如累计出题/答对）。 */
+    private String msg3(String key, String def, String cmd, String arg, String arg2) {
         String s = baseCfg == null ? def : baseCfg.getString("messages." + key, def);
-        if (cmd != null) s = s.replace("{cmd}", cmd);
+        if (cmd != null) {
+            s = s.replace("{cmd}", cmd);
+        } else if (arg != null) {
+            // 兼容旧版 status-total 默认值（曾借用 {cmd} 传累计出题数）：cmd 为空时用 arg 回填
+            s = s.replace("{cmd}", arg);
+        }
         if (arg != null) s = s.replace("{arg}", arg);
+        if (arg2 != null) s = s.replace("{arg2}", arg2);
         return s.replace('&', '§');
     }
 
@@ -1177,6 +1191,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (this.econ == null) return false;
             this.economyClass = econClass;
             this.economyMethods.clear();
+            this.missingMethods.clear();
             this.economyProviderName = readEconomyName();
             this.economyBankSupport = readEconomyBankSupport();
             return true;
@@ -1296,16 +1311,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         if (econ == null || economyClass == null) return null;
         try {
             String cacheKey = methodName + Arrays.toString(parameterTypes);
+            if (missingMethods.contains(cacheKey)) return null; // 已知缺失的方法直接返回
             Method m = economyMethods.get(cacheKey);
-            if (m == null && !economyMethods.containsKey(cacheKey)) {
+            if (m == null) {
                 try {
                     m = economyClass.getMethod(methodName, parameterTypes);
                 } catch (NoSuchMethodException ignored) {
                     m = null;
                 }
-                economyMethods.put(cacheKey, m); // null 也缓存：缺失的方法下次直接返回
+                if (m == null) {
+                    missingMethods.add(cacheKey);
+                    return null;
+                }
+                economyMethods.put(cacheKey, m);
             }
-            if (m == null) return null;
             return m.invoke(econ, arguments);
         } catch (Throwable t) {
             getLogger().log(Level.WARNING, "调用经济方法 " + methodName + " 时出错", t);
@@ -1486,8 +1505,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     currentQuestion != null ? currentQuestion.question : "无"));
             sender.sendMessage(msg("status-paused", " 暂停(余额不足): {arg}", paused ? "§c是" : "§a否"));
             sender.sendMessage(msg("status-verifying", " 人机验证锁定: {arg}", verifying ? "§c是" : "§a否"));
-            sender.sendMessage(msg2("status-total", " 累计出题: §f{cmd} §7已答对: §f{arg}",
-                    String.valueOf(totalAsked), String.valueOf(totalAnswered)));
+            sender.sendMessage(msg3("status-total", " 累计出题: §f{arg} §7已答对: §f{arg2}",
+                    null, String.valueOf(totalAsked), String.valueOf(totalAnswered)));
             if (economyAvailable) {
                 // 余额查询可能打 Vault 后端 IO，异步查完再回主线程输出，避免卡主线程
                 final String payer = payerDisplay;
