@@ -29,14 +29,12 @@ import java.util.logging.Level;
  *   注意不要把它们加进 pom 依赖，全部走反射调用以便优雅降级。
  */
 public class QuizPlugin extends JavaPlugin implements Listener {
-    // Vault 经济服务实例（用 Object 持有，避免编译期依赖 Vault API）
-    private Object econ; // provider instance
-    // 缓存 Vault Economy 的 Class 与 Method：发奖一次最多触发 9 次反射查询，缓存后只剩 invoke
-    // ConcurrentHashMap：status 余额异步查询后，反射缓存不再是主线程独占；
-    // ConcurrentHashMap 不存 null，缺失的方法记在 missingMethods 里
-    private Class<?> economyClass;
-    private final Map<String, Method> economyMethods = new java.util.concurrent.ConcurrentHashMap<>();
-    private final Set<String> missingMethods = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // 子系统：经济桥接 / 答案匹配 / 消息中心（大重构拆出，主类只保留状态机与流程编排）
+    // 注意：EconomyBridge 构造需要 Logger，getLogger() 在字段初始化阶段不可用，onEnable 里再 new；
+    // Messages 持 baseCfg 的方法引用，lambda 在调用时才求值，不存在前向引用问题
+    EconomyBridge economy;
+    final QuestionMatcher matcher = new QuestionMatcher();
+    final Messages messages = new Messages(this::getBaseCfg);
 
     private final Random random = new Random();
 
@@ -49,8 +47,6 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile long verifyEpoch = 0L; // 验证轮次：reload/force/超时解锁时自增，旧回调直接丢弃
     private volatile long nextPostAtMillis = 0L; // when the next question may be posted
     private volatile boolean economyAvailable = false;
-    private String economyProviderName = null;
-    private boolean economyBankSupport = true;
 
     // 配置项缓存
     private String payerName;
@@ -60,13 +56,13 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private double antiBotThresholdSeconds;
     private int antiBotCorrectAnswerThreshold;
     private long antiBotStreakWindowSeconds;
-    // 异步聊天线程会读 antiBotChat*/fuzzySimilarityThreshold/celebrate*（reload 在主线程写），加 volatile 保证可见性
+    // 异步聊天线程会读 antiBotChat*/celebrate*（reload 在主线程写），加 volatile 保证可见性；
+    // 模糊阈值已搬进 QuestionMatcher（自带 volatile），主类不再持有
     private volatile int antiBotChatHistoryCount;
     private volatile double antiBotChatMinIntervalSeconds;
     private long verifyTimeoutSeconds;
     private long balanceRetrySeconds = 30L; // 暂停后每隔多少秒复查一次出资人余额
     private volatile long nextBalanceCheckMillis = 0L;
-    private volatile double fuzzySimilarityThreshold = 0.75; // default similarity threshold (0-1)
     private boolean leaderboardBroadcastEnabled = true;
     private long leaderboardBroadcastMinutes = 60L;
     private int leaderboardBroadcastCount = 10;
@@ -77,17 +73,18 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile float celebrateVolume = 1.0f;
     private volatile float celebratePitch = 1.0f;
 
-    // 解析后的出资人信息（支持 UUID / 玩家名 / Server / LittleSkin 前缀）
-    private org.bukkit.OfflinePlayer payerOffline = null;
-    private boolean payerIsServer = false;
-    private boolean payerUsesUuid = false;
-    private String payerDisplay = null; // human readable identifier
+    // 出资人解析已搬进 EconomyBridge（resolvePayer/isPayer/getPayerDisplay）
 
     // 配置文件
     private File baseFile;
     private File questionsFile;
     private FileConfiguration baseCfg;
     private FileConfiguration questionsCfg;
+
+    /** 供 Messages 子系统惰性读取 base.yml 配置。 */
+    FileConfiguration getBaseCfg() {
+        return baseCfg;
+    }
 
     // 定时任务句柄
     private BukkitTask tickerTask;
@@ -126,13 +123,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             return;
         }
 
+        economy = new EconomyBridge(getLogger());
         economyAvailable = setupEconomy();
         if (!economyAvailable) {
             getLogger().warning("未找到 Vault 经济插件：以“仅公告、无奖励”模式运行，安装 Vault 后请重启或重载插件");
         } else {
-            getLogger().info("已连接经济后端: " + (economyProviderName != null ? economyProviderName : "未知"));
-            if (payerIsServer && !economyBankSupport) {
-                getLogger().warning("经济后端 " + (economyProviderName != null ? economyProviderName : "未知")
+            getLogger().info("已连接经济后端: " + (economyProviderName() != null ? economyProviderName() : "未知"));
+            if (payerIsServer() && !economyBankSupport()) {
+                getLogger().warning("经济后端 " + (economyProviderName() != null ? economyProviderName() : "未知")
                         + " 未实现银行账户 API，将按账户名 \"" + payerName + "\" 扣款。"
                         + "请确保该账户存在且有余额，否则出题会因“资金不足”暂停；"
                         + "XConomy 可在 config.yml 开启 non-player-account 并给该账户充值。");
@@ -335,7 +333,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         baseCfg = YamlConfiguration.loadConfiguration(baseFile);
         questionsCfg = YamlConfiguration.loadConfiguration(questionsFile);
-        cachedPrefix = null; // base.yml 已重载，前缀缓存失效
+        messages.invalidateCache(); // base.yml 已重载，前缀缓存失效
 
         payerName = baseCfg.getString("payer", "Server");
         rewardAmount = Math.max(0.0, baseCfg.getDouble("reward", 50.0));
@@ -348,8 +346,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         antiBotChatMinIntervalSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-chat-min-interval-seconds", 0.5));
         verifyTimeoutSeconds = Math.max(10L, baseCfg.getLong("verify-timeout-seconds", 120L));
         balanceRetrySeconds = Math.max(5L, baseCfg.getLong("balance-retry-seconds", 30L));
-        fuzzySimilarityThreshold = Math.min(1.0, Math.max(0.0,
-                baseCfg.getDouble("fuzzy-similarity-threshold", fuzzySimilarityThreshold)));
+        matcher.setFuzzySimilarityThreshold(
+                baseCfg.getDouble("fuzzy-similarity-threshold", matcher.getFuzzySimilarityThreshold()));
         leaderboardBroadcastEnabled = baseCfg.getBoolean("leaderboard-broadcast.enabled", true);
         leaderboardBroadcastMinutes = Math.max(1L, baseCfg.getLong("leaderboard-broadcast.minutes", 60L));
         leaderboardBroadcastCount = Math.min(20, Math.max(1, baseCfg.getInt("leaderboard-broadcast.count", 10)));
@@ -531,15 +529,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return messages;
     }
 
-    private volatile String cachedPrefix = null; // prefix 缓存：reload 时失效
-
+    // 消息转发到 Messages 子系统（渐进迁移：调用方不动，行为零变化）
     private String messagePrefix() {
-        String hit = cachedPrefix;
-        if (hit != null) return hit;
-        String prefix = baseCfg == null ? "&6[教育部]" : baseCfg.getString("messages.prefix", "&6[教育部]");
-        hit = prefix.replace('&', '§');
-        cachedPrefix = hit;
-        return hit;
+        return messages.prefix();
     }
 
     // Bukkit 传统文本 API 兼容层，Paper 与 Spigot 通用。
@@ -563,83 +555,34 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         player.sendTitle(title, subtitle);
     }
 
-    /** 可配置消息：读 messages.<key>，缺失用默认值；支持 & 颜色码与 {arg} 占位。 */
+    // 消息转发到 Messages 子系统（渐进迁移：调用方不动，行为零变化）
     private String msg(String key, String def, String arg) {
-        String s = baseCfg == null ? def : baseCfg.getString("messages." + key, def);
-        if (arg != null) s = s.replace("{arg}", arg);
-        return s.replace('&', '§');
+        return messages.msg(key, def, arg);
     }
 
-    /** 双占位版本：{cmd} 为命令别名（如 lma），{arg} 为其他参数。 */
     private String msg2(String key, String def, String cmd, String arg) {
-        return msg3(key, def, cmd, arg, null);
+        return messages.msg2(key, def, cmd, arg);
     }
 
-    /**
-     * 三占位版本：在 msg2 基础上加 {arg2}，用于需要两个数字参数的消息（如累计出题/答对）。
-     * 兼容逻辑：cmd 为空时用 arg 回填 {cmd}（老服 base.yml 的 status-total 默认值曾借用 {cmd} 传累计出题数，
-     * saveResource 不覆盖旧文件，不能指望老服自动更新默认值）。
-     */
     private String msg3(String key, String def, String cmd, String arg, String arg2) {
-        String s = baseCfg == null ? def : baseCfg.getString("messages." + key, def);
-        if (cmd != null) {
-            s = s.replace("{cmd}", cmd);
-        } else if (arg != null) {
-            // 兼容旧版 status-total 默认值（曾借用 {cmd} 传累计出题数）：cmd 为空时用 arg 回填
-            s = s.replace("{cmd}", arg);
-        }
-        if (arg != null) s = s.replace("{arg}", arg);
-        if (arg2 != null) s = s.replace("{arg2}", arg2);
-        return s.replace('&', '§');
+        return messages.msg3(key, def, cmd, arg, arg2);
     }
 
+    // 出资人解析转发到 EconomyBridge（渐进迁移：调用方不动，行为零变化）
     private void resolvePayer(String payer) {
-        payerOffline = null;
-        payerIsServer = false;
-        payerUsesUuid = false;
-        payerDisplay = payer;
-        if (payer == null) return;
-        if (payer.equalsIgnoreCase("server") || payer.equalsIgnoreCase("console")) {
-            payerIsServer = true;
-            payerDisplay = payer;
-            return;
-        }
-        // 支持 littleskin:uuid 或 littleskin:name 两种写法
-        if (payer.toLowerCase().startsWith("littleskin:")) {
-            String v = payer.substring(payer.indexOf(":") + 1);
-            try {
-                java.util.UUID uuid = java.util.UUID.fromString(v);
-                payerOffline = Bukkit.getOfflinePlayer(uuid);
-                payerDisplay = uuid.toString();
-                return;
-            } catch (IllegalArgumentException ignored) {
-                // fall through to name
-            }
-            payerOffline = Bukkit.getOfflinePlayer(v);
-            payerDisplay = payerOffline.getName() != null ? payerOffline.getName() : v;
-            return;
-        }
-        // 尝试按 UUID 解析
-        try {
-            java.util.UUID uuid = java.util.UUID.fromString(payer);
-            payerOffline = Bukkit.getOfflinePlayer(uuid);
-            payerUsesUuid = true;
-            payerDisplay = uuid.toString();
-            return;
-        } catch (IllegalArgumentException ignored) {
-        }
-        // 兜底按玩家名处理
-        payerOffline = Bukkit.getOfflinePlayer(payer);
-        payerDisplay = payerOffline.getName() != null ? payerOffline.getName() : payer;
+        economy.resolvePayer(payer);
     }
 
-    /** 判断答对者是否为出资人（UUID 优先，其次名字忽略大小写比对）。 */
     private boolean isPayer(Player player) {
-        if (player == null) return false;
-        if (payerIsServer) return false; // Server/Console 账户不可能是真实玩家
-        if (payerOffline != null && player.getUniqueId().equals(payerOffline.getUniqueId())) return true;
-        String name = player.getName();
-        return name != null && payerDisplay != null && name.equalsIgnoreCase(payerDisplay);
+        return economy.isPayer(player);
+    }
+
+    private String payerDisplay() {
+        return economy.getPayerDisplay();
+    }
+
+    private boolean payerIsServer() {
+        return economy.isPayerServer();
     }
 
     private void stopTask() {
@@ -704,88 +647,13 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return questions.get(questions.size() - 1);
     }
 
-    /**
-     * 任一候选答案匹配即算答对。normalizedAnswers 为出题时预归一化的答案，
-     * 聊天消息只归一化一次，避免每条消息重复归一化题库答案。
-     */
+    // 答案匹配转发到 QuestionMatcher（渐进迁移：调用方不动，行为零变化）
     private boolean matchesAny(String providedNormalized, List<String> normalizedAnswers) {
-        if (providedNormalized == null || providedNormalized.isEmpty() || normalizedAnswers == null) return false;
-        for (String b : normalizedAnswers) {
-            if (b.isEmpty()) continue;
-            if (providedNormalized.equals(b)) return true;
-            if (fuzzySimilarityThreshold >= 1.0) continue; // 1.0 = 严格精确匹配
-            int max = Math.max(providedNormalized.length(), b.length());
-            // sim >= threshold  <=>  dist <= max * (1 - threshold)，上界早退
-            int maxDist = (int) Math.floor(max * (1.0 - fuzzySimilarityThreshold));
-            int dist = levenshtein(providedNormalized, b, maxDist);
-            if (dist <= maxDist) return true;
-        }
-        return false;
+        return matcher.matchesAny(providedNormalized, normalizedAnswers);
     }
-
-    /** 预编译：String.replaceAll 每次都编译 Pattern，高频聊天路径下不可接受。 */
-    private static final java.util.regex.Pattern NON_ALNUM = java.util.regex.Pattern.compile("[^\\p{L}\\p{N}]+");
 
     private static String normalize(String s) {
-        // Locale.ROOT：避免土耳其语等 locale 下 I/i 大小写转换异常
-        return s == null ? "" : NON_ALNUM.matcher(s).replaceAll("").toLowerCase(Locale.ROOT);
-    }
-
-    /** DP 数组复用：聊天消息长度已限 100 字，按 128 预分配，线程隔离避免并发污染。 */
-    private static final ThreadLocal<int[][]> LEVENSHTEIN_BUF =
-            ThreadLocal.withInitial(() -> new int[2][128]);
-
-    /**
-     * 带上界的编辑距离：若中途已能确定距离超过 maxDist，直接返回 maxDist+1。
-     * 调用方只关心“是否达标”，超标的精确值无意义，早退省掉剩余 DP 计算。
-     */
-    private int levenshtein(String s1, String s2, int maxDist) {
-        int n = s1.length();
-        int m = s2.length();
-        if (Math.abs(n - m) > maxDist) return maxDist + 1; // 长度差本身就是下界
-        // 超长回退：正常走不到（聊天限 100 字），避免越界
-        if (m + 1 > 128) return levenshteinAlloc(s1, s2, maxDist);
-        int[][] buf = LEVENSHTEIN_BUF.get();
-        int[] prev = buf[0];
-        int[] curr = buf[1];
-        for (int j = 0; j <= m; j++) prev[j] = j;
-        for (int i = 1; i <= n; i++) {
-            curr[0] = i;
-            int rowMin = curr[0];
-            for (int j = 1; j <= m; j++) {
-                int cost = s1.charAt(i - 1) == s2.charAt(j - 1) ? 0 : 1;
-                curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
-                if (curr[j] < rowMin) rowMin = curr[j];
-            }
-            if (rowMin > maxDist) return maxDist + 1; // 整行都超标，后续只会更大
-            int[] tmp = prev;
-            prev = curr;
-            curr = tmp;
-        }
-        return prev[m];
-    }
-
-    /** 超长回退路径：分配新数组计算（正常走不到，仅防越界）。 */
-    private int levenshteinAlloc(String s1, String s2, int maxDist) {
-        int n = s1.length();
-        int m = s2.length();
-        int[] prev = new int[m + 1];
-        int[] curr = new int[m + 1];
-        for (int j = 0; j <= m; j++) prev[j] = j;
-        for (int i = 1; i <= n; i++) {
-            curr[0] = i;
-            int rowMin = curr[0];
-            for (int j = 1; j <= m; j++) {
-                int cost = s1.charAt(i - 1) == s2.charAt(j - 1) ? 0 : 1;
-                curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
-                if (curr[j] < rowMin) rowMin = curr[j];
-            }
-            if (rowMin > maxDist) return maxDist + 1;
-            int[] tmp = prev;
-            prev = curr;
-            curr = tmp;
-        }
-        return prev[m];
+        return QuestionMatcher.normalize(s);
     }
 
     private final List<Question> questions = new ArrayList<>();
@@ -799,7 +667,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             long nowMs = System.currentTimeMillis();
             if (nowMs < nextBalanceCheckMillis) return;
             nextBalanceCheckMillis = nowMs + balanceRetrySeconds * 1000L;
-            double bal = getBalanceOf(payerDisplay);
+            double bal = getBalanceOf(payerDisplay());
             if (bal >= rewardAmount) {
                 paused = false;
                 String countMsg = rewardAmount > 0.0
@@ -1141,7 +1009,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             return;
         }
         // 检查出资人余额
-        double payerBal = getBalanceOf(payerDisplay);
+        double payerBal = getBalanceOf(payerDisplay());
         if (payerBal < rewardAmount) {
             paused = true;
             // 进入暂停即定好下次复查时间，避免 tick 第一秒就重复查询
@@ -1152,7 +1020,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             return;
         }
 
-        Object w = withdrawFrom(payerDisplay, rewardAmount);
+        Object w = withdrawFrom(payerDisplay(), rewardAmount);
         if (!isEconomyResponseSuccess(w)) {
             paused = true;
             nextBalanceCheckMillis = System.currentTimeMillis() + balanceRetrySeconds * 1000L;
@@ -1172,7 +1040,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 broadcastLegacy(messagePrefix() + " §c发放奖励失败，已退款，请联系管理员。错误: " + err);
             } else {
                 // 退款也失败：出资人已被扣款，玩家未到账，必须人工介入，不能谎称已退款
-                getLogger().severe("退款失败！出资人 " + payerDisplay + " 已被扣 " + rewardAmount
+                getLogger().severe("退款失败！出资人 " + payerDisplay() + " 已被扣 " + rewardAmount
                         + "，玩家 " + winner.getName() + " 未到账。请手动补账。发放错误: " + err
                         + "，退款错误: " + getEconomyResponseError(refund));
                 broadcastLegacy(messagePrefix() + " §c发放奖励失败，且自动退款失败！请联系管理员手动补账。错误: " + err);
@@ -1186,225 +1054,95 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         celebrate(winner, rewardAmount);
     }
 
+    // 经济初始化转发到 EconomyBridge（渐进迁移：调用方不动，行为零变化）
     private boolean setupEconomy() {
-        try {
-            Class<?> econClass = Class.forName("net.milkbowl.vault.economy.Economy");
-            // 通过 ServicesManager 获取 Vault 经济服务注册信息
-            Object rsp = getServer().getServicesManager().getRegistration(econClass);
-            if (rsp == null) return false;
-            // RegisteredServiceProvider 通过 getProvider() 取实际服务实例
-            Method getProvider = rsp.getClass().getMethod("getProvider");
-            Object provider = getProvider.invoke(rsp);
-            this.econ = provider;
-            if (this.econ == null) return false;
-            this.economyClass = econClass;
-            this.economyMethods.clear();
-            this.missingMethods.clear();
-            this.economyProviderName = readEconomyName();
-            this.economyBankSupport = readEconomyBankSupport();
-            return true;
-        } catch (ClassNotFoundException cnf) {
-            getLogger().warning("Vault API 不在类路径中，无法加载 Economy 接口");
-            return false;
-        } catch (Throwable t) {
-            getLogger().log(Level.SEVERE, "加载经济提供者时出错", t);
-            return false;
-        }
+        return economy.setup();
     }
 
-    private String readEconomyName() {
-        try {
-            Object r = invokeEconomy("getName", new Class<?>[0]);
-            if (r instanceof String) {
-                String s = ((String) r).trim();
-                if (!s.isEmpty()) return s;
-            }
-        } catch (Throwable ignored) {}
-        return null;
+    private String economyProviderName() {
+        return economy.getProviderName();
     }
 
-    private boolean readEconomyBankSupport() {
-        try {
-            Object r = invokeEconomy("hasBankSupport", new Class<?>[0]);
-            if (r instanceof Boolean) return (Boolean) r;
-        } catch (Throwable ignored) {}
-        return true;
+    private boolean economyBankSupport() {
+        return economy.hasBankSupport();
     }
 
-    // 经济反射调用辅助方法（无编译期 Vault 依赖，全部运行时反射）
+    // 经济调用转发到 EconomyBridge（渐进迁移：调用方不动，行为零变化）
     private double getBalanceOf(String who) {
-        if (econ == null) return 0.0;
-        if (payerIsServer && economyBankSupport) {
-            Double balance = extractBalance(invokeEconomy("bankBalance", new Class<?>[]{String.class}, who));
-            if (balance != null) return balance;
-        }
-        // 注意：invokeEconomy 内部已捕获全部异常并返回 null，外层无需 try-catch
-        if (payerUsesUuid && payerOffline != null) {
-            Object uuidResponse = invokeEconomy("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
-            if (uuidResponse instanceof Number) return ((Number) uuidResponse).doubleValue();
-        }
-        Object response = invokeEconomy("getBalance", new Class<?>[]{String.class}, who);
-        if (response instanceof Number) return ((Number) response).doubleValue();
-        if (payerOffline != null) {
-            Object offlineResponse = invokeEconomy("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
-            if (offlineResponse instanceof Number) return ((Number) offlineResponse).doubleValue();
-        }
-        return 0.0;
+        return economy.getBalanceOf(who);
     }
 
     private Object withdrawFrom(String who, double amount) {
-        if (econ == null) return null;
-        if (payerIsServer && economyBankSupport) {
-            Object response = invokeEconomy("bankWithdraw", new Class<?>[]{String.class, double.class}, who, amount);
-            if (response != null) return response;
-        }
-        // 注意：invokeEconomy 内部已捕获全部异常并返回 null，外层无需 try-catch
-        if (payerUsesUuid && payerOffline != null) {
-            Object uuidResponse = invokeEconomy("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
-            if (uuidResponse != null) return uuidResponse;
-        }
-        Object response = invokeEconomy("withdrawPlayer", new Class<?>[]{String.class, double.class}, who, amount);
-        if (response != null) return response;
-        if (payerOffline != null) {
-            Object offlineResponse = invokeEconomy("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
-            if (offlineResponse != null) return offlineResponse;
-        }
-        return null;
+        return economy.withdrawFrom(who, amount);
     }
 
-    /** 给在线获奖者发奖：优先用 OfflinePlayer/UUID，避免改名玩家按旧名错发。 */
     private Object depositTo(Player winner, double amount) {
-        if (econ == null) return null;
-        // 在线玩家优先走 OfflinePlayer 通道（UUID 精确，防改名错发）
-        // 注意：invokeEconomy 内部已捕获全部异常，外层无需 try-catch
-        Object response = invokeEconomy("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, winner, amount);
-        if (response != null) return response;
-        return depositTo(winner.getName(), amount);
+        return economy.depositTo(winner, amount);
     }
 
-    /**
-     * 给出资人退款：必须与 withdrawFrom 走对称通道，否则钱会退错地方。
-     * <ul>
-     *   <li>Server 出资（bankWithdraw 扣的）→ bankDeposit 退回银行账户</li>
-     *   <li>UUID 出资（OfflinePlayer 扣的）→ OfflinePlayer 退回</li>
-     *   <li>普通玩家名出资 → 按名退回</li>
-     * </ul>
-     */
     private Object refundToPayer(double amount) {
-        if (econ == null) return null;
-        // 注意：invokeEconomy 内部已捕获全部异常并返回 null，外层无需 try-catch
-        if (payerIsServer && economyBankSupport) {
-            Object response = invokeEconomy("bankDeposit", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
-            if (response != null) return response;
-        }
-        if (payerOffline != null && (payerUsesUuid || payerDisplay == null
-                || (payerOffline.getName() != null && payerOffline.getName().equals(payerDisplay)))) {
-            Object offlineResponse = invokeEconomy("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
-            if (offlineResponse != null) return offlineResponse;
-        }
-        Object response = invokeEconomy("depositPlayer", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
-        if (response != null) return response;
-        return null;
+        return economy.refundToPayer(amount);
     }
 
-    /** 按账户名发奖（仅用于非出资人退款等兜底路径）。 */
     private Object depositTo(String who, double amount) {
-        if (econ == null) return null;
-        Object response = invokeEconomy("depositPlayer", new Class<?>[]{String.class, double.class}, who, amount);
-        if (response != null) return response;
-        return null;
-    }
-
-    private Object invokeEconomy(String methodName, Class<?>[] parameterTypes, Object... arguments) {
-        if (econ == null || economyClass == null) return null;
-        try {
-            String cacheKey = methodName + Arrays.toString(parameterTypes);
-            if (missingMethods.contains(cacheKey)) return null; // 已知缺失的方法直接返回
-            Method m = economyMethods.get(cacheKey);
-            if (m == null) {
-                try {
-                    m = economyClass.getMethod(methodName, parameterTypes);
-                } catch (NoSuchMethodException ignored) {
-                    m = null;
-                }
-                if (m == null) {
-                    missingMethods.add(cacheKey);
-                    return null;
-                }
-                economyMethods.put(cacheKey, m);
-            }
-            return m.invoke(econ, arguments);
-        } catch (Throwable t) {
-            getLogger().log(Level.WARNING, "调用经济方法 " + methodName + " 时出错", t);
-            return null;
-        }
-    }
-
-    private Double extractBalance(Object response) {
-        if (response instanceof Number) return ((Number) response).doubleValue();
-        if (response == null) return null;
-        try {
-            try {
-                Method method = response.getClass().getMethod("getBalance");
-                Object value = method.invoke(response);
-                if (value instanceof Number) return ((Number) value).doubleValue();
-            } catch (NoSuchMethodException ignored) {
-                java.lang.reflect.Field field = response.getClass().getField("balance");
-                Object value = field.get(response);
-                if (value instanceof Number) return ((Number) value).doubleValue();
-            }
-        } catch (Throwable t) {
-            getLogger().log(Level.WARNING, "读取经济余额响应时出错", t);
-        }
-        return null;
+        return economy.depositTo(who, amount);
     }
 
     private boolean isEconomyResponseSuccess(Object resp) {
-        if (resp == null) return false;
-        try {
-            // 先试 transactionSuccess() 方法
-            try {
-                Method m = resp.getClass().getMethod("transactionSuccess");
-                Object r = m.invoke(resp);
-                if (r instanceof Boolean) return (Boolean) r;
-            } catch (NoSuchMethodException ignored) {}
-            // 再试 success 字段
-            try {
-                java.lang.reflect.Field f = resp.getClass().getField("success");
-                Object r = f.get(resp);
-                if (r instanceof Boolean) return (Boolean) r;
-            } catch (NoSuchFieldException ignored) {}
-        } catch (Throwable t) {
-            getLogger().log(Level.WARNING, "检查经济响应时出错", t);
-        }
-        return false;
+        return economy.isSuccess(resp);
     }
 
     private String getEconomyResponseError(Object resp) {
-        if (resp == null) return "null_response";
-        try {
-            // 先试 errorMessage 字段
-            try {
-                java.lang.reflect.Field f = resp.getClass().getField("errorMessage");
-                Object r = f.get(resp);
-                if (r != null) return r.toString();
-            } catch (NoSuchFieldException ignored) {}
-            // 再试 getErrorMessage() 方法
-            try {
-                Method m = resp.getClass().getMethod("getErrorMessage");
-                Object r = m.invoke(resp);
-                if (r != null) return r.toString();
-            } catch (NoSuchMethodException ignored) {}
-            // 兜底用 toString()
-            return resp.toString();
-        } catch (Throwable t) {
-            getLogger().log(Level.WARNING, "读取经济响应错误信息时出错", t);
-            return "error_read_failed";
+        return economy.errorOf(resp);
+    }
+
+    // 命令处理器：子命令注册表驱动——别名、权限、处理器、补全全部单源定义，
+    // 新增子命令只需在 COMMANDS 加一行 + sendHelp 补一行 + plugin.yml/README 同步
+    private interface SubHandler {
+        boolean handle(CommandSender sender, String label, String[] args);
+    }
+
+    private static class SubCommand {
+        final String name;
+        final boolean admin;
+        final List<String> aliases;
+        final SubHandler handler;
+
+        SubCommand(String name, boolean admin, SubHandler handler, String... aliases) {
+            this.name = name;
+            this.admin = admin;
+            this.handler = handler;
+            this.aliases = Arrays.asList(aliases);
+        }
+
+        boolean matches(String sub) {
+            if (name.equals(sub)) return true;
+            for (String a : aliases) {
+                if (a.equals(sub)) return true;
+            }
+            return false;
         }
     }
 
-    // 命令处理器
     private class QuizCommand implements CommandExecutor, TabCompleter {
+        private final List<SubCommand> commands = Arrays.asList(
+                new SubCommand("help", false, (s, l, a) -> { sendHelp(s, l); return true; }, "?"),
+                new SubCommand("top", false, (s, l, a) -> { sendTop(s, a.length > 1 ? a[1] : null); return true; }),
+                new SubCommand("stats", false, (s, l, a) -> { sendStats(s, a.length > 1 ? a[1] : null); return true; }),
+                new SubCommand("status", false, (s, l, a) -> { sendStatus(s); return true; }),
+                new SubCommand("start", true, (s, l, a) -> handleStart(s)),
+                new SubCommand("stop", true, (s, l, a) -> handleStop(s)),
+                new SubCommand("question", true, (s, l, a) -> handleQuestion(s, a), "q"),
+                new SubCommand("reload", true, (s, l, a) -> handleReload(s))
+        );
+
+        private SubCommand find(String sub) {
+            for (SubCommand c : commands) {
+                if (c.matches(sub)) return c;
+            }
+            return null;
+        }
+
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
             if (args.length == 0) {
@@ -1412,78 +1150,64 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 return true;
             }
             String sub = args[0].toLowerCase(Locale.ROOT);
-            // 查询类子命令全员可用
-            switch (sub) {
-                case "help":
-                case "?":
-                    sendHelp(sender, label);
-                    return true;
-                case "top":
-                    sendTop(sender, args.length > 1 ? args[1] : null);
-                    return true;
-                case "stats":
-                    sendStats(sender, args.length > 1 ? args[1] : null);
-                    return true;
-                case "status":
-                    sendStatus(sender);
-                    return true;
-            }
-            boolean adminCmd = sub.equals("start") || sub.equals("stop") || sub.equals("question")
-                    || sub.equals("q") || sub.equals("reload");
-            if (!adminCmd) {
+            SubCommand cmd = find(sub);
+            if (cmd == null) {
                 sender.sendMessage(msg("unknown-command", "&c未知子命令: {arg}", sub));
                 sendHelp(sender, label);
                 return true;
             }
-            if (!sender.hasPermission("letmeask.admin")) {
+            if (cmd.admin && !sender.hasPermission("letmeask.admin")) {
                 sender.sendMessage(msg("no-permission", "&c你没有权限执行此命令 (letmeask.admin)", null));
                 return true;
             }
-            switch (sub) {
-                case "start":
-                    startTask();
-                    if (currentQuestion == null && !verifying && !paused) {
-                        publishQuestion();
-                        nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
-                    }
-                    sender.sendMessage(msg("started", "&a已启动定时出题", null));
-                    return true;
-                case "stop":
-                    stopTask();
-                    // 停止同时作废当前题并解锁验证：否则题目残留仍可作答，与“已停止”语义矛盾
-                    if (currentQuestion != null || verifying) {
-                        if (verifyingPlayer != null) resetStreak(verifyingPlayer);
-                        clearQuestionState();
-                        sender.sendMessage(msg("stopped-with-question", "&c已停止定时出题（当前题目已作废）", null));
-                    } else {
-                        sender.sendMessage(msg("stopped", "&c已停止定时出题", null));
-                    }
-                    return true;
-                case "question":
-                case "q": {
-                    boolean force = args.length > 1 && args[1].equalsIgnoreCase("force");
-                    boolean ok = postNewQuestion(force);
-                    if (ok) sender.sendMessage(msg("question-posted", "&a已发布新题目", null));
-                    else sender.sendMessage(msg("question-blocked", "&c无法发布新题目（已有题目/正在验证/已暂停）。使用 /letmeask question force 可强制发布", null));
-                    return true;
-                }
-                case "reload": {
-                    boolean ok = loadConfigValues();
-                    // 重载时若正在验证：解锁并作废本轮，否则锁会一直占到验证超时
-                    if (verifying) {
-                        if (verifyingPlayer != null) resetStreak(verifyingPlayer);
-                        clearQuestionState();
-                        sender.sendMessage(msg("reload-dropped-verify", "&e重载时存在未完成的验证，已作废本轮题目", null));
-                    }
-                    // restart scheduler to pick up interval changes
-                    startTask();
-                    startLeaderboardTask(); // 排行榜广播配置也可能变了，一并重启
-                    if (ok) sender.sendMessage(msg("reloaded", "&a已重载配置(base.yml 与 questions.yml)", null));
-                    else sender.sendMessage(msg("reloaded-empty", "&e配置已重载，但新题库为空，已保留旧题库继续运行", null));
-                    return true;
-                }
+            return cmd.handler.handle(sender, label, args);
+        }
+
+        private boolean handleStart(CommandSender sender) {
+            startTask();
+            if (currentQuestion == null && !verifying && !paused) {
+                publishQuestion();
+                nextPostAtMillis = System.currentTimeMillis() + questionIntervalSeconds * 1000L;
             }
-            return true; // unreachable：adminCmd 已前置过滤，但保留以满足编译
+            sender.sendMessage(msg("started", "&a已启动定时出题", null));
+            return true;
+        }
+
+        private boolean handleStop(CommandSender sender) {
+            stopTask();
+            // 停止同时作废当前题并解锁验证：否则题目残留仍可作答，与“已停止”语义矛盾
+            if (currentQuestion != null || verifying) {
+                if (verifyingPlayer != null) resetStreak(verifyingPlayer);
+                clearQuestionState();
+                sender.sendMessage(msg("stopped-with-question", "&c已停止定时出题（当前题目已作废）", null));
+            } else {
+                sender.sendMessage(msg("stopped", "&c已停止定时出题", null));
+            }
+            return true;
+        }
+
+        private boolean handleQuestion(CommandSender sender, String[] args) {
+            boolean force = args.length > 1 && args[1].equalsIgnoreCase("force");
+            boolean ok = postNewQuestion(force);
+            if (ok) sender.sendMessage(msg("question-posted", "&a已发布新题目", null));
+            else sender.sendMessage(msg("question-blocked", "&c无法发布新题目（已有题目/正在验证/已暂停）。使用 /letmeask question force 可强制发布", null));
+            return true;
+        }
+
+        private boolean handleReload(CommandSender sender) {
+            boolean ok = loadConfigValues();
+            // 重载时若正在验证：解锁并作废本轮，否则锁会一直占到验证超时
+            if (verifying) {
+                if (verifyingPlayer != null) resetStreak(verifyingPlayer);
+                clearQuestionState();
+                sender.sendMessage(msg("reload-dropped-verify", "&e重载时存在未完成的验证，已作废本轮题目", null));
+            }
+            // restart scheduler to pick up interval changes
+            startTask();
+            startLeaderboardTask(); // 排行榜广播配置也可能变了，一并重启
+            if (ok) sender.sendMessage(msg("reloaded", "&a已重载配置(base.yml 与 questions.yml)", null));
+            else sender.sendMessage(msg("reloaded-empty", "&e配置已重载，但新题库为空，已保留旧题库继续运行", null));
+            return true;
         }
 
         private void sendHelp(CommandSender sender, String label) {
@@ -1517,11 +1241,13 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     null, String.valueOf(totalAsked), String.valueOf(totalAnswered)));
             if (economyAvailable) {
                 // 余额查询可能打 Vault 后端 IO，异步查完再回主线程输出，避免卡主线程
-                final String payer = payerDisplay;
+                final String payerNameSnap = payerDisplay();
+                final String providerSnap = economyProviderName();
+                final boolean bankWarn = payerIsServer() && !economyBankSupport();
                 Bukkit.getScheduler().runTaskAsynchronously(QuizPlugin.this, () -> {
                     double bal;
                     try {
-                        bal = getBalanceOf(payer);
+                        bal = getBalanceOf(payerNameSnap);
                     } catch (Throwable t) {
                         bal = Double.NaN;
                     }
@@ -1531,9 +1257,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                         String balText = Double.isNaN(balance)
                                 ? "§c查询失败"
                                 : String.format(Locale.ROOT, "%,.2f", balance);
-                        sender.sendMessage(" 支付玩家: §f" + payer + " §7(余额: " + balText + ")");
-                        sender.sendMessage(" 经济后端: §f" + (economyProviderName != null ? economyProviderName : "未知")
-                                + (payerIsServer && !economyBankSupport ? " §7(无银行账户，按账户名扣款)" : ""));
+                        sender.sendMessage(" 支付玩家: §f" + payerNameSnap + " §7(余额: " + balText + ")");
+                        sender.sendMessage(" 经济后端: §f" + (providerSnap != null ? providerSnap : "未知")
+                                + (bankWarn ? " §7(无银行账户，按账户名扣款)" : ""));
                     });
                 });
             } else {
@@ -1585,10 +1311,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         @Override
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
+                // 补全与分发同源：注册表即唯一来源，新增子命令自动出现在补全里
                 String prefix = args[0].toLowerCase(Locale.ROOT);
-                List<String> subs = new ArrayList<>(Arrays.asList("help", "?", "top", "stats", "status"));
-                if (sender.hasPermission("letmeask.admin")) {
-                    subs.addAll(Arrays.asList("start", "stop", "question", "q", "reload"));
+                boolean admin = sender.hasPermission("letmeask.admin");
+                List<String> subs = new ArrayList<>();
+                for (SubCommand c : commands) {
+                    if (!c.admin || admin) {
+                        subs.add(c.name);
+                        subs.addAll(c.aliases);
+                    }
                 }
                 return subs.stream()
                         .filter(subcommand -> subcommand.startsWith(prefix))
