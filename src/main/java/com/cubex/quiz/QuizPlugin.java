@@ -614,7 +614,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             recentChatMessages.clear();
         }
         totalAsked++;
-        broadcastLegacy(messagePrefix() + " §f新题目: §f" + q.question);
+        broadcastLegacy(messagePrefix() + msg("announce-question", " §f新题目: §f{arg}", q.question));
     }
 
     /**
@@ -670,11 +670,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             double bal = getBalanceOf(payerDisplay());
             if (bal >= rewardAmount) {
                 paused = false;
-                String countMsg = rewardAmount > 0.0
-                        ? "，预计还可以奖励" + String.format(Locale.ROOT, "%,d", (long) (bal / rewardAmount)) + "次。"
-                        : "。";
-                broadcastLegacy(messagePrefix() + " §a资金已足额，恢复出题。当前余额: "
-                        + String.format(Locale.ROOT, "%,.2f", bal) + countMsg);
+                String countText = rewardAmount > 0.0
+                        ? String.format(Locale.ROOT, "%,d", (long) (bal / rewardAmount))
+                        : "";
+                broadcastLegacy(messagePrefix() + msg3("announce-funded",
+                        " §a资金已足额，恢复出题。当前余额: {arg}，预计还可以奖励{arg2}次。",
+                        null, String.format(Locale.ROOT, "%,.2f", bal), countText));
             } else {
                 return;
             }
@@ -690,11 +691,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 if (verifyingPlayer != null) resetStreak(verifyingPlayer);
                 if (p != null) {
                     getLogger().warning(p.getName() + "人机验证超时（" + verifyTimeoutSeconds + "s），自动解锁作废本轮题目，并踢出玩家");
-                    broadcastLegacy(messagePrefix() + " §c玩家 " + p.getName() + " 因人机验证超时被踢出服务器，本轮题目作废。");
+                    broadcastLegacy(messagePrefix() + msg("announce-verify-timeout-kick", " §c玩家 {arg} 因人机验证超时被踢出服务器，本轮题目作废。", p.getName()));
                     kickLegacy(p, msg("kick-verify-timeout", "人机验证超时", null));
                 } else {
                     getLogger().warning("人机验证超时（" + verifyTimeoutSeconds + "s），玩家已离线，自动解锁并作废本轮题目");
-                    broadcastLegacy(messagePrefix() + " §c人机验证超时，本轮题目作废。");
+                    broadcastLegacy(messagePrefix() + msg("announce-verify-timeout", " §c人机验证超时，本轮题目作废。", null));
                 }
                 clearQuestionState();
             }
@@ -706,7 +707,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (questionTimeoutSeconds > 0) {
                 long elapsedMillis = System.currentTimeMillis() - currentQuestion.postTime;
                 if (elapsedMillis >= questionTimeoutSeconds * 1000L) {
-                    broadcastLegacy(messagePrefix() + " §c无人答对！答案是: §f" + currentQuestion.displayAnswer());
+                    broadcastLegacy(messagePrefix() + msg("announce-timeout", " §c无人答对！答案是: §f{arg}", currentQuestion.displayAnswer()));
                     correctAnswerCounts.clear();
                     lastCorrectTimes.clear();
                     clearQuestionState();
@@ -808,7 +809,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         if (chatTooFast) {
             resetStreak(player.getUniqueId());
             clearQuestionState();
-            broadcastLegacy(messagePrefix() + " §c玩家 §f" + player.getName() + " §c因聊天消息间隔过短被踢出服务器。");
+            broadcastLegacy(messagePrefix() + msg("announce-chat-kick", " §c玩家 §f{arg} §c因聊天消息间隔过短被踢出服务器。", player.getName()));
             kickLegacy(player, msg("kick-chat-too-fast", "聊天消息间隔过短", null));
             return;
         }
@@ -872,8 +873,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 verifying = true;
                 verifyingPlayer = player.getUniqueId();
                 verifyStartMillis = System.currentTimeMillis();
-                broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c"
-                        + reason + "，需要进行人机验证...");
+                broadcastLegacy(messagePrefix() + msg3("announce-verify-start", " §c玩家 §f{arg} §c{arg2}，需要进行人机验证...", null, p.getName(), reason));
                 java.util.UUID targetPlayer = p.getUniqueId();
                 java.util.UUID targetQuestion = snapshot.id;
                 long targetEpoch = verifyEpoch;
@@ -924,7 +924,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                                 resetStreak(targetPlayer);
                                 clearQuestionState();
                                 if (p.isOnline()) {
-                                    broadcastLegacy(messagePrefix() + " §c玩家 §f" + p.getName() + " §c未通过人机验证，已被踢出服务器。");
+                                    broadcastLegacy(messagePrefix() + msg("announce-verify-failed", " §c玩家 §f{arg} §c未通过人机验证，已被踢出服务器。", p.getName()));
                                     kickLegacy(p, msg("kick-verify-failed", "未通过人机验证", null));
                                 }
                             }
@@ -990,21 +990,21 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // 无 Vault 时降级为纯公告模式，不暂停出题
         if (!economyAvailable) {
             recordCorrect(winner, 0.0);
-            broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（未安装 Vault，本轮无货币奖励）");
+            broadcastLegacy(messagePrefix() + msg("announce-win-no-vault", " §a玩家 §f{arg} §a答对了问题！§7（未安装 Vault，本轮无货币奖励）", winner.getName()));
             celebrate(winner, 0.0);
             return;
         }
         // 奖励为 0：跳过全部转账调用，直接公告
         if (rewardAmount <= 0.0) {
             recordCorrect(winner, 0.0);
-            broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！");
+            broadcastLegacy(messagePrefix() + msg("announce-win", " §a玩家 §f{arg} §a答对了问题！", winner.getName()));
             celebrate(winner, 0.0);
             return;
         }
         // 答对者就是出资人：左手倒右手，跳过转账
         if (isPayer(winner)) {
             recordCorrect(winner, 0.0);
-            broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题！§7（出资人自答，无需转账）");
+            broadcastLegacy(messagePrefix() + msg("announce-win-self", " §a玩家 §f{arg} §a答对了问题！§7（出资人自答，无需转账）", winner.getName()));
             celebrate(winner, 0.0);
             return;
         }
@@ -1014,9 +1014,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             paused = true;
             // 进入暂停即定好下次复查时间，避免 tick 第一秒就重复查询
             nextBalanceCheckMillis = System.currentTimeMillis() + balanceRetrySeconds * 1000L;
-            broadcastLegacy(messagePrefix() + " §c出题已暂停：资金不足（需要 "
-                    + String.format(Locale.ROOT, "%,.2f", rewardAmount) + "，当前 "
-                    + String.format(Locale.ROOT, "%,.2f", payerBal) + "）。");
+            broadcastLegacy(messagePrefix() + msg3("announce-paused-funds",
+                    " §c出题已暂停：资金不足（需要 {arg}，当前 {arg2}）。", null,
+                    String.format(Locale.ROOT, "%,.2f", rewardAmount),
+                    String.format(Locale.ROOT, "%,.2f", payerBal)));
             return;
         }
 
@@ -1025,7 +1026,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             paused = true;
             nextBalanceCheckMillis = System.currentTimeMillis() + balanceRetrySeconds * 1000L;
             String err = getEconomyResponseError(w);
-            broadcastLegacy(messagePrefix() + " §c转账失败（错误: " + err + "），出题已暂停。请检查服务器日志。" );
+            broadcastLegacy(messagePrefix() + msg("announce-transfer-failed", " §c转账失败（错误: {arg}），出题已暂停。请检查服务器日志。", err));
             getLogger().warning("扣款失败: " + err);
             return;
         }
@@ -1037,20 +1038,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             getLogger().warning("发放给胜利玩家失败: " + err + "。尝试退款。");
             Object refund = refundToPayer(rewardAmount);
             if (isEconomyResponseSuccess(refund)) {
-                broadcastLegacy(messagePrefix() + " §c发放奖励失败，已退款，请联系管理员。错误: " + err);
+                broadcastLegacy(messagePrefix() + msg("announce-refunded", " §c发放奖励失败，已退款，请联系管理员。错误: {arg}", err));
             } else {
                 // 退款也失败：出资人已被扣款，玩家未到账，必须人工介入，不能谎称已退款
                 getLogger().severe("退款失败！出资人 " + payerDisplay() + " 已被扣 " + rewardAmount
                         + "，玩家 " + winner.getName() + " 未到账。请手动补账。发放错误: " + err
                         + "，退款错误: " + getEconomyResponseError(refund));
-                broadcastLegacy(messagePrefix() + " §c发放奖励失败，且自动退款失败！请联系管理员手动补账。错误: " + err);
+                broadcastLegacy(messagePrefix() + msg("announce-refund-failed", " §c发放奖励失败，且自动退款失败！请联系管理员手动补账。错误: {arg}", err));
             }
             return;
         }
 
         recordCorrect(winner, rewardAmount);
-        broadcastLegacy(messagePrefix() + " §a玩家 §f" + winner.getName() + " §a答对了问题，获得 §e"
-                + String.format(Locale.ROOT, "%,.2f", rewardAmount) + " §a货币！");
+        broadcastLegacy(messagePrefix() + msg3("announce-win-reward", " §a玩家 §f{arg} §a答对了问题，获得 §e{arg2} §a货币！",
+                null, winner.getName(), String.format(Locale.ROOT, "%,.2f", rewardAmount)));
         celebrate(winner, rewardAmount);
     }
 
