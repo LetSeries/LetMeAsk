@@ -885,9 +885,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                         Bukkit.getScheduler().runTask(this, () -> {
                             if (targetEpoch != verifyEpoch) return;
                             if (!verifying || !targetPlayer.equals(verifyingPlayer)) return;
+                            Player live = Bukkit.getPlayer(targetPlayer);
                             resetStreak(targetPlayer);
                             clearQuestionState();
-                            awardWinner(p);
+                            if (live == null) return; // 验证期间已退服：只清状态，不发奖
+                            awardWinner(live);
                         });
                         return;
                     }
@@ -912,14 +914,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                             if (cur == null || cur.id == null || !cur.id.equals(targetQuestion)) return;
 
                             if (passed) {
-                                if (!p.isOnline()) {
-                                    resetStreak(targetPlayer);
-                                    clearQuestionState();
-                                    return;
-                                }
+                                Player live = Bukkit.getPlayer(targetPlayer);
                                 resetStreak(targetPlayer);
                                 clearQuestionState();
-                                awardWinner(p);
+                                if (live == null) return; // 验证期间已退服：只清状态，不发奖
+                                awardWinner(live);
                             } else {
                                 resetStreak(targetPlayer);
                                 clearQuestionState();
