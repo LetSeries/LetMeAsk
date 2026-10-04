@@ -920,11 +920,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                                 if (live == null) return; // 验证期间已退服：只清状态，不发奖
                                 awardWinner(live);
                             } else {
+                                // 失败分支同样重新查活：闭包 p 可能是验证期间已退服的过期引用，
+                                // 对离线引用 kick 会抛异常，用查活后的 live 才安全
+                                Player live = Bukkit.getPlayer(targetPlayer);
                                 resetStreak(targetPlayer);
                                 clearQuestionState();
-                                if (p.isOnline()) {
-                                    broadcastLegacy(messagePrefix() + msg("announce-verify-failed", " §c玩家 §f{arg} §c未通过人机验证，已被踢出服务器。", p.getName()));
-                                    kickLegacy(p, msg("kick-verify-failed", "未通过人机验证", null));
+                                if (live != null) {
+                                    broadcastLegacy(messagePrefix() + msg("announce-verify-failed", " §c玩家 §f{arg} §c未通过人机验证，已被踢出服务器。", live.getName()));
+                                    kickLegacy(live, msg("kick-verify-failed", "未通过人机验证", null));
                                 }
                             }
                         });
