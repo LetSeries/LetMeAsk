@@ -668,7 +668,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (nowMs < nextBalanceCheckMillis) return;
             nextBalanceCheckMillis = nowMs + balanceRetrySeconds * 1000L;
             double bal = getBalanceOf(payerDisplay());
-            if (bal >= rewardAmount) {
+            // 恢复阈值加 1 美分滞后：余额恰好等于奖励时恢复后下一题又暂停，来回横跳刷屏
+            if (bal >= rewardAmount + 0.01) {
                 paused = false;
                 String countText = rewardAmount > 0.0
                         ? String.format(Locale.ROOT, "%,d", (long) (bal / rewardAmount))
