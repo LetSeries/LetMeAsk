@@ -766,7 +766,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         // 玩家离线即清理连击记录，防止长期在线服 Map 无限增长
-        resetStreak(event.getPlayer().getUniqueId());
+        java.util.UUID uuid = event.getPlayer().getUniqueId();
+        resetStreak(uuid);
+        // 被验证人退出：直接作废本轮（epoch 自增使旧回调失效），否则题目锁到验证超时
+        if (verifying && uuid.equals(verifyingPlayer)) {
+            clearQuestionState();
+        }
     }
 
     private boolean recordChatMessage(java.util.UUID playerId, java.util.UUID questionId, long messageTime,
