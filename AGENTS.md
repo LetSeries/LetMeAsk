@@ -14,7 +14,7 @@ Minecraft Paper/Spigot 抢答插件（答题发金币）。用户可见文案与
 
 ## 代码结构
 
-- 源文件（`src/main/java/com/cubex/quiz/`）：`QuizPlugin.java`（状态机与流程编排，含内部类 `Question`、`QuizCommand`、`ChatHistory`）+ 拆出的 `EconomyBridge.java`（经济反射/出资人/退款通道）、`QuestionMatcher.java`（归一化/模糊匹配）、`Messages.java`（前缀缓存/msg 可配置消息）。主类通过同名 private 转发方法调用子系统，行为零变化。
+- 源文件（`src/main/java/com/cubex/quiz/`）：`QuizPlugin.java`（状态机与流程编排，含内部类 `Question`、`QuizCommand`、`ChatHistory`）+ 拆出的 `EconomyBridge.java`（经济反射/出资人/退款通道）、`QuestionMatcher.java`（归一化/模糊匹配）、`Messages.java`（前缀缓存/msg 可配置消息）、`StatsStore.java`（统计读写/落盘/排行快照，锁内部自持）。主类通过同名 private 转发方法调用子系统，行为零变化。
 - `plugin.yml` 与代码必须同步：子命令在 `QuizCommand.commands` 注册表单源定义（别名/权限/处理器），`sendHelp` 文案、`onTabComplete` 补全都从同一张表生成。新增子命令要在注册表加一行 + `sendHelp` 补一行 + `plugin.yml`/`README` 命令表同步。
 
 ## 可选依赖走反射，别加进 pom
