@@ -26,7 +26,7 @@
 
 ## 安装
 
-1. 下载 `LetMeAsk-1.1.0.jar`
+1. 下载 `LetMeAsk-2.0.0.jar`（或 CI `latest` 滚动构建）
 2. 将 JAR 文件放入服务器 `plugins/` 目录
 3. 重启服务器
 4. 编辑 `plugins/LetMeAsk/base.yml` 和 `questions.yml` 进行配置
@@ -142,7 +142,9 @@ gradle build
 mvn clean package -Drevision=1.2.0
 ```
 
-CI 每次构建会自动追加 commit 短哈希（如 `1.1.0-a1b2c3d`），`latest` release 永远是最新构建。
+CI 每次构建会自动追加 commit 短哈希（如 `2.0.0-a1b2c3d`），`latest` release 永远是最新构建。
+
+详见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可证
 

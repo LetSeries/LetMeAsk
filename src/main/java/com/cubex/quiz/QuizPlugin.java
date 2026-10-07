@@ -94,19 +94,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private final Map<java.util.UUID, Long> lastCorrectTimes = new HashMap<>();
     private final Map<java.util.UUID, ChatHistory> recentChatMessages = new HashMap<>();
 
-    // 答题统计（持久化到 stats.yml，key 为玩家 UUID 字符串）
-    private File statsFile;
-    private FileConfiguration statsCfg;
-    private final Map<String, Integer> totalCorrect = new HashMap<>();
-    private final Map<String, Double> totalEarned = new HashMap<>();
-    private final Set<String> statsDirty = new HashSet<>(); // 自上次落盘后有变更的玩家 key
-    private final Map<String, String> nameCache = new HashMap<>(); // UUID 字符串 -> 最后已知玩家名（top 榜免查）
-    private volatile long totalAsked = 0L;
-    private volatile long totalAnswered = 0L;
-    // 统计独立锁：saveStats 走异步线程，recordCorrect 走主线程；不用 this 锁，避免异步落盘阻塞主线程答题
-    private final Object statsLock = new Object();
-    // 落盘独占锁：快照在 statsLock 下拷贝，磁盘 IO 在此锁下串行，主线程发奖全程不被 IO 阻塞
-    private final Object statsSaveLock = new Object();
+    // 答题统计已搬进 StatsStore（持久化到 stats.yml，key 为玩家 UUID 字符串；锁内部自持）
+    StatsStore stats;
     // 答题专用锁：handleCorrectAnswer 不再用 synchronized 方法，避免占用插件 this 监视器
     private final Object answerLock = new Object();
 
@@ -149,6 +138,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // 启动定时出题任务（同时处理暂停恢复检查）
         startTask();
 
+        stats = new StatsStore(getLogger(), getDataFolder());
         loadStats();
         startLeaderboardTask();
         // 统计落盘：30 秒增量写（只写有变更的玩家），每 10 次做一次全量（约 5 分钟）
@@ -178,142 +168,30 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         getLogger().info("QuizPlugin disabled");
     }
 
-    /** 从 stats.yml 加载累计统计。 */
+    // 统计读写转发到 StatsStore（渐进迁移：调用方不动，行为零变化）
     private void loadStats() {
-        statsFile = new File(getDataFolder(), "stats.yml");
-        statsCfg = YamlConfiguration.loadConfiguration(statsFile);
-        totalCorrect.clear();
-        totalEarned.clear();
-        nameCache.clear();
-        org.bukkit.configuration.ConfigurationSection players = statsCfg.getConfigurationSection("players");
-        if (players != null) {
-            for (String key : players.getKeys(false)) {
-                totalCorrect.put(key, players.getInt(key + ".correct", 0));
-                totalEarned.put(key, players.getDouble(key + ".earned", 0.0));
-                String n = players.getString(key + ".name");
-                if (n != null && !n.isEmpty()) nameCache.put(key, n);
-            }
-        }
-        totalAsked = statsCfg.getLong("total-asked", 0L);
-        totalAnswered = statsCfg.getLong("total-answered", 0L);
+        stats.load();
     }
 
-    /**
-     * 写回 stats.yml。incremental=true 时只写 dirty 玩家+累计计数（30s 高频任务用），
-     * false 时全量写回（5 分钟任务与关服时用）。
-     * 调用方注意线程：定时任务走异步，onDisable 走主线程。
-     * 快照在 statsLock 下拷贝后释放锁，磁盘 IO 在 statsSaveLock 下串行——
-     * 主线程 recordCorrect 只被短暂拷贝阻塞，不再被慢 IO 卡住。
-     */
     private void saveStats(boolean incremental) {
-        if (statsCfg == null || statsFile == null) return;
-        final long asked;
-        final long answered;
-        final Map<String, Integer> correctSnap;
-        final Map<String, Double> earnedSnap;
-        final Map<String, String> nameSnap;
-        final Set<String> dirtySnap;
-        synchronized (statsLock) {
-            if (incremental && statsDirty.isEmpty()) return; // 无变更时连文件都不碰
-            asked = totalAsked;
-            answered = totalAnswered;
-            if (incremental) {
-                dirtySnap = new HashSet<>(statsDirty);
-                correctSnap = new HashMap<>();
-                earnedSnap = new HashMap<>();
-                nameSnap = new HashMap<>();
-                for (String uuid : dirtySnap) {
-                    correctSnap.put(uuid, totalCorrect.getOrDefault(uuid, 0));
-                    earnedSnap.put(uuid, totalEarned.getOrDefault(uuid, 0.0));
-                    String n = nameCache.get(uuid);
-                    if (n != null) nameSnap.put(uuid, n);
-                }
-                statsDirty.clear();
-            } else {
-                dirtySnap = null;
-                correctSnap = new HashMap<>(totalCorrect);
-                earnedSnap = new HashMap<>(totalEarned);
-                nameSnap = new HashMap<>(nameCache);
-                statsDirty.clear();
-            }
-        }
-        synchronized (statsSaveLock) {
-            try {
-                statsCfg.set("total-asked", asked);
-                statsCfg.set("total-answered", answered);
-                if (incremental) {
-                    for (String uuid : dirtySnap) {
-                        String key = "players." + uuid;
-                        statsCfg.set(key + ".correct", correctSnap.getOrDefault(uuid, 0));
-                        statsCfg.set(key + ".earned", earnedSnap.getOrDefault(uuid, 0.0));
-                        String n = nameSnap.get(uuid);
-                        if (n != null) statsCfg.set(key + ".name", n);
-                    }
-                } else {
-                    for (Map.Entry<String, Integer> e : correctSnap.entrySet()) {
-                        String key = "players." + e.getKey();
-                        statsCfg.set(key + ".correct", e.getValue());
-                        statsCfg.set(key + ".earned", earnedSnap.getOrDefault(e.getKey(), 0.0));
-                        String n = nameSnap.get(e.getKey());
-                        if (n != null) statsCfg.set(key + ".name", n);
-                    }
-                }
-                statsCfg.save(statsFile);
-            } catch (Exception ex) {
-                getLogger().log(Level.WARNING, "保存 stats.yml 失败", ex);
-            }
-        }
+        stats.save(incremental);
     }
 
     /** 全量保存（关服与 5 分钟任务用）。 */
     private void saveStats() {
-        saveStats(false);
+        stats.save();
     }
 
-    /**
-     * 记录一次答对：累计次数与实发金额（0 奖励/自答/无 Vault 时金额为 0 也计数）。
-     * statsLock：awardWinner 走主线程，saveStats 走异步定时任务，需与保存互斥。
-     */
     private void recordCorrect(Player player, double earned) {
-        synchronized (statsLock) {
-            String key = player.getUniqueId().toString();
-            totalCorrect.merge(key, 1, Integer::sum);
-            if (earned > 0.0) totalEarned.merge(key, earned, Double::sum);
-            else totalEarned.putIfAbsent(key, 0.0);
-            if (player.getName() != null) nameCache.put(key, player.getName());
-            statsDirty.add(key);
-            totalAnswered++;
-        }
+        stats.recordCorrect(player, earned);
     }
 
-    /**
-     * UUID 反查最后已知玩家名：先读内存缓存，未命中再查 Bukkit（UUID 版走内存映射，不碰磁盘）。
-     * 仍无则回退显示 UUID 前 8 位。
-     * Bukkit 查询放锁外：只做缓存读写加锁，避免拖长临界区。
-     */
     private String displayNameOf(String uuidKey) {
-        synchronized (statsLock) {
-            String cached = nameCache.get(uuidKey);
-            if (cached != null) return cached;
-        }
-        String found = null;
-        try {
-            org.bukkit.OfflinePlayer off = Bukkit.getOfflinePlayer(java.util.UUID.fromString(uuidKey));
-            found = off.getName();
-        } catch (IllegalArgumentException ignored) {}
-        if (found != null) {
-            cacheName(uuidKey, found);
-            return found;
-        }
-        return uuidKey.length() > 8 ? uuidKey.substring(0, 8) : uuidKey;
+        return stats.displayNameOf(uuidKey);
     }
 
-    /** 线程安全地缓存玩家名（sendStats 走命令线程，直接写 map 会与异步保存竞态）。 */
     private void cacheName(String uuidKey, String name) {
-        if (uuidKey == null || name == null) return;
-        synchronized (statsLock) {
-            nameCache.put(uuidKey, name);
-        }
+        stats.cacheName(uuidKey, name);
     }
 
 
@@ -499,9 +377,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     private void broadcastTop(int count) {
         // 空榜时跳过定时广播：手动 /top 仍提示“暂无记录”，但别每小时刷屏打扰玩家
-        synchronized (statsLock) {
-            if (totalCorrect.isEmpty()) return;
-        }
+        if (stats.isEmpty()) return;
         List<String> messages = topMessages(count);
         for (Player player : Bukkit.getOnlinePlayers()) {
             for (String message : messages) {
@@ -511,14 +387,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     }
 
     private List<String> topMessages(int count) {
-        // 快照拷贝：统计 Map 受 statsLock 保护，异步落盘线程会并发读写，直接遍历会抛 CME
-        final List<Map.Entry<String, Integer>> sorted;
-        final Map<String, Double> earned;
-        synchronized (statsLock) {
-            sorted = new ArrayList<>(totalCorrect.entrySet());
-            earned = new HashMap<>(totalEarned);
-        }
-        sorted.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+        // 排行快照由 StatsStore 提供（内部加锁拷贝，遍历无锁安全，防 CME）
+        List<Map.Entry<String, Integer>> sorted = stats.sortedSnapshot();
         if (sorted.isEmpty()) {
             return Collections.singletonList(msg("no-records", "&e暂无答题记录", null));
         }
@@ -529,7 +399,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         for (Map.Entry<String, Integer> entry : sorted) {
             if (++rank > count) break;
             messages.add(" §e" + rank + ". §f" + displayNameOf(entry.getKey()) + " §7答对 §f" + entry.getValue()
-                    + " §7奖金 §e" + String.format(Locale.ROOT, "%,.2f", earned.getOrDefault(entry.getKey(), 0.0)));
+                    + " §7奖金 §e" + String.format(Locale.ROOT, "%,.2f", stats.getEarned(entry.getKey())));
         }
         return messages;
     }
@@ -618,7 +488,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         synchronized (recentChatMessages) {
             recentChatMessages.clear();
         }
-        totalAsked++;
+        stats.incrementAsked();
         broadcastLegacy(messagePrefix() + msg("announce-question", " §f新题目: §f{arg}", q.question));
     }
 
@@ -1264,7 +1134,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(msg("status-paused", " 暂停(余额不足): {arg}", paused ? "§c是" : "§a否"));
             sender.sendMessage(msg("status-verifying", " 人机验证锁定: {arg}", verifying ? "§c是" : "§a否"));
             sender.sendMessage(msg3("status-total", " 累计出题: §f{arg} §7已答对: §f{arg2}",
-                    null, String.valueOf(totalAsked), String.valueOf(totalAnswered)));
+                    null, String.valueOf(stats.getTotalAsked()), String.valueOf(stats.getTotalAnswered())));
             if (economyAvailable) {
                 // 余额查询可能打 Vault 后端 IO，异步查完再回主线程输出，避免卡主线程
                 final String payerNameSnap = payerDisplay();
@@ -1316,8 +1186,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             String key = target.getUniqueId().toString();
             cacheName(key, target.getName()); // 顺手更新缓存（加锁，与异步保存互斥）
             String display = displayNameOf(key);
-            int correct = totalCorrect.getOrDefault(key, 0);
-            double earned = totalEarned.getOrDefault(key, 0.0);
+            int correct = stats.getCorrect(key);
+            double earned = stats.getEarned(key);
             sender.sendMessage("§6玩家 §f" + display + " §6的答题统计:");
             sender.sendMessage(" 答对: §f" + correct + " §7累计奖金: §e" + String.format(Locale.ROOT, "%,.2f", earned));
         }
