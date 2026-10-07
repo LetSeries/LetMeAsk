@@ -319,8 +319,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
 
     /**
-     * 加载配置。题库解析到临时列表：新题库为空则保留旧题库并返回 false，
-     * 调用方据此决定是禁用插件（启动时）还是报错但继续运行（reload 时）。
+     * 加载配置。先验题库再应用 base.yml：题库为空则整体回滚（旧题库+旧配置都不动），
+     * 返回 false；调用方据此决定禁用插件（启动时）还是报错继续运行（reload 时）。
      */
     private boolean loadConfigValues() {
         // load base and questions from their own files
@@ -331,8 +331,43 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (!questionsFile.exists()) saveResource("questions.yml", false);
         } catch (Exception ignored) {}
 
-        baseCfg = YamlConfiguration.loadConfiguration(baseFile);
-        questionsCfg = YamlConfiguration.loadConfiguration(questionsFile);
+        FileConfiguration newBase = YamlConfiguration.loadConfiguration(baseFile);
+        FileConfiguration newQuestions = YamlConfiguration.loadConfiguration(questionsFile);
+
+        // 先验题库：解析到临时列表，空则整体回滚（base.yml 字段与出资人都不动）
+        // 条目可以是纯字符串（"题目=答案"，权重 1），也可以是 map（{q, a, weight}）
+        List<?> raw = newQuestions.getList("questions");
+        boolean usingFallback = false;
+        if (raw == null || raw.isEmpty()) {
+            if (questions.isEmpty()) {
+                // 首次启动且无题库：用内置示例兜底
+                raw = Arrays.asList(
+                        "中国首都=北京",
+                        "2+2=4",
+                        "香蕉是什么颜色=黄色"
+                );
+                usingFallback = true;
+                getLogger().warning("questions.yml 中没有题目，使用内置示例题目。请在 questions.yml 中配置 questions 字段（格式：题目=答案）");
+            } else {
+                // reload 时新题库为空：整体回滚，不中断运行
+                getLogger().warning("questions.yml 中没有可用题目，已保留旧题库与旧配置（" + questions.size() + " 题）。请检查配置后重新 reload。");
+                return false;
+            }
+        }
+
+        List<Question> parsed = parseQuestions(raw);
+        if (parsed.isEmpty()) {
+            if (questions.isEmpty()) {
+                getLogger().severe("没有可用题目，插件无法正常出题。请在 questions.yml 中添加题目。");
+                return false;
+            }
+            getLogger().warning("新题库解析后为空，已保留旧题库与旧配置（" + questions.size() + " 题）。");
+            return false;
+        }
+
+        // 题库可用：提交新配置
+        baseCfg = newBase;
+        questionsCfg = newQuestions;
         messages.invalidateCache(); // base.yml 已重载，前缀缓存失效
 
         payerName = baseCfg.getString("payer", "Server");
@@ -360,36 +395,6 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         // resolve payer to a stable identifier (UUID/name/Server/LittleSkin)
         resolvePayer(payerName);
-
-        // 条目可以是纯字符串（"题目=答案"，权重 1），也可以是 map（{q, a, weight}）
-        List<?> raw = questionsCfg.getList("questions");
-        boolean usingFallback = false;
-        if (raw == null || raw.isEmpty()) {
-            if (questions.isEmpty()) {
-                // 首次启动且无题库：用内置示例兜底
-                raw = Arrays.asList(
-                        "中国首都=北京",
-                        "2+2=4",
-                        "香蕉是什么颜色=黄色"
-                );
-                usingFallback = true;
-                getLogger().warning("questions.yml 中没有题目，使用内置示例题目。请在 questions.yml 中配置 questions 字段（格式：题目=答案）");
-            } else {
-                // reload 时新题库为空：保留旧题库，不中断运行
-                getLogger().warning("questions.yml 中没有可用题目，已保留旧题库（" + questions.size() + " 题）。请检查配置后重新 reload。");
-                return false;
-            }
-        }
-
-        List<Question> parsed = parseQuestions(raw);
-        if (parsed.isEmpty()) {
-            if (questions.isEmpty()) {
-                getLogger().severe("没有可用题目，插件无法正常出题。请在 questions.yml 中添加题目。");
-                return false;
-            }
-            getLogger().warning("新题库解析后为空，已保留旧题库（" + questions.size() + " 题）。");
-            return false;
-        }
 
         questions.clear();
         questions.addAll(parsed);
@@ -1116,11 +1121,16 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         final boolean admin;
         final List<String> aliases;
         final SubHandler handler;
+        // 帮助行：msg 键与默认值（help 菜单循环生成，新增子命令不再漏行）
+        final String helpKey;
+        final String helpDef;
 
-        SubCommand(String name, boolean admin, SubHandler handler, String... aliases) {
+        SubCommand(String name, boolean admin, SubHandler handler, String helpKey, String helpDef, String... aliases) {
             this.name = name;
             this.admin = admin;
             this.handler = handler;
+            this.helpKey = helpKey;
+            this.helpDef = helpDef;
             this.aliases = Arrays.asList(aliases);
         }
 
@@ -1135,14 +1145,22 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     private class QuizCommand implements CommandExecutor, TabCompleter {
         private final List<SubCommand> commands = Arrays.asList(
-                new SubCommand("help", false, (s, l, a) -> { sendHelp(s, l); return true; }, "?"),
-                new SubCommand("top", false, (s, l, a) -> { sendTop(s, a.length > 1 ? a[1] : null); return true; }),
-                new SubCommand("stats", false, (s, l, a) -> { sendStats(s, a.length > 1 ? a[1] : null); return true; }),
-                new SubCommand("status", false, (s, l, a) -> { sendStatus(s); return true; }),
-                new SubCommand("start", true, (s, l, a) -> handleStart(s)),
-                new SubCommand("stop", true, (s, l, a) -> handleStop(s)),
-                new SubCommand("question", true, (s, l, a) -> handleQuestion(s, a), "q"),
-                new SubCommand("reload", true, (s, l, a) -> handleReload(s))
+                new SubCommand("help", false, (s, l, a) -> { sendHelp(s, l); return true; },
+                        "help-help", "&e/{cmd} help &7- 显示此帮助", "?"),
+                new SubCommand("top", false, (s, l, a) -> { sendTop(s, a.length > 1 ? a[1] : null); return true; },
+                        "help-top", "&e/{cmd} top [数量] &7- 答题排行榜（默认 10，最多 20）"),
+                new SubCommand("stats", false, (s, l, a) -> { sendStats(s, a.length > 1 ? a[1] : null); return true; },
+                        "help-stats", "&e/{cmd} stats [玩家] &7- 查看答题统计（默认自己）"),
+                new SubCommand("status", false, (s, l, a) -> { sendStatus(s); return true; },
+                        "help-status", "&e/{cmd} status &7- 查看插件状态"),
+                new SubCommand("start", true, (s, l, a) -> handleStart(s),
+                        "help-start", "&e/{cmd} start &7- 启动定时出题"),
+                new SubCommand("stop", true, (s, l, a) -> handleStop(s),
+                        "help-stop", "&e/{cmd} stop &7- 停止定时出题"),
+                new SubCommand("question", true, (s, l, a) -> handleQuestion(s, a),
+                        "help-question", "&e/{cmd} question [force] &7- 发布新题目（force 强制）", "q"),
+                new SubCommand("reload", true, (s, l, a) -> handleReload(s),
+                        "help-reload", "&e/{cmd} reload &7- 重载配置")
         );
 
         private SubCommand find(String sub) {
@@ -1215,7 +1233,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             startTask();
             startLeaderboardTask(); // 排行榜广播配置也可能变了，一并重启
             if (ok) sender.sendMessage(msg("reloaded", "&a已重载配置(base.yml 与 questions.yml)", null));
-            else sender.sendMessage(msg("reloaded-empty", "&e配置已重载，但新题库为空，已保留旧题库继续运行", null));
+                    else sender.sendMessage(msg("reloaded-empty", "&e配置已重载，但新题库为空，已保留旧题库与旧配置继续运行", null));
             return true;
         }
 
@@ -1223,16 +1241,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             // 用玩家实际输入的别名展示（如 /lma 进来就显示 /lma），复制即用
             String cmd = (label == null || label.isEmpty()) ? "letmeask" : label;
             sender.sendMessage(msg("help-header", "&6&m----------&r &6LetMeAsk 帮助 &6&m----------", null));
-            sender.sendMessage(msg2("help-help", "&e/{cmd} help &7- 显示此帮助", cmd, null));
-            sender.sendMessage(msg2("help-top", "&e/{cmd} top [数量] &7- 答题排行榜（默认 10，最多 20）", cmd, null));
-            sender.sendMessage(msg2("help-stats", "&e/{cmd} stats [玩家] &7- 查看答题统计（默认自己）", cmd, null));
-            sender.sendMessage(msg2("help-status", "&e/{cmd} status &7- 查看插件状态", cmd, null));
-            if (sender.hasPermission("letmeask.admin")) {
-                sender.sendMessage(msg("help-admin-header", "&6管理命令:", null));
-                sender.sendMessage(msg2("help-start", "&e/{cmd} start &7- 启动定时出题", cmd, null));
-                sender.sendMessage(msg2("help-stop", "&e/{cmd} stop &7- 停止定时出题", cmd, null));
-                sender.sendMessage(msg2("help-question", "&e/{cmd} question [force] &7- 发布新题目（force 强制）", cmd, null));
-                sender.sendMessage(msg2("help-reload", "&e/{cmd} reload &7- 重载配置", cmd, null));
+            // 帮助行从注册表循环生成：新增子命令只需在 commands 加一行，不会再漏
+            boolean adminSection = false;
+            for (SubCommand c : commands) {
+                if (c.admin && !sender.hasPermission("letmeask.admin")) continue;
+                if (c.admin && !adminSection) {
+                    sender.sendMessage(msg("help-admin-header", "&6管理命令:", null));
+                    adminSection = true;
+                }
+                sender.sendMessage(msg2(c.helpKey, c.helpDef, cmd, null));
             }
             sender.sendMessage(msg("help-footer", "&6&m--------------------------------", null));
         }

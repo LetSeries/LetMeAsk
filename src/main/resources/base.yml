@@ -66,7 +66,7 @@ messages:
   question-blocked: "&c无法发布新题目（已有题目/正在验证/已暂停）。使用 /letmeask question force 可强制发布"
   reload-dropped-verify: "&e重载时存在未完成的验证，已作废本轮题目"
   reloaded: "&a已重载配置(base.yml 与 questions.yml)"
-  reloaded-empty: "&e配置已重载，但新题库为空，已保留旧题库继续运行"
+  reloaded-empty: "&e配置已重载，但新题库为空，已保留旧题库与旧配置继续运行"
   kick-verify-timeout: "人机验证超时"
   kick-chat-too-fast: "聊天消息间隔过短"
   kick-verify-failed: "未通过人机验证"
