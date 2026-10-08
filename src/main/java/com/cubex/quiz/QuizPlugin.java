@@ -63,6 +63,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private long verifyTimeoutSeconds;
     private long balanceRetrySeconds = 30L; // 暂停后每隔多少秒复查一次出资人余额
     private volatile long nextBalanceCheckMillis = 0L;
+    // 验证服务缺失告警只刷一次：无 HumanVerify 的服每次触发验证都会走降级，不能每题刷 warning
+    private volatile boolean verifyMissingWarned = false;
     private boolean leaderboardBroadcastEnabled = true;
     private long leaderboardBroadcastMinutes = 60L;
     private int leaderboardBroadcastCount = 10;
@@ -720,6 +722,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             // 按对接示例调用 HumanVerifyApi，要求该 API 在编译/运行时可用；
             // 若对方包名不同，需自行调整。
             // 注意：verifying 锁与广播放在确认 future 有效之后；验证服务缺失时直接发奖，不打扰玩家。
+            // 缺失类告警只刷一次：无 HumanVerify 的服每次触发验证都会走降级，不能每题刷 warning
             Object future = null;
             try {
                 // 使用反射调用 HumanVerifyApi，避免将第三方实现打进本插件。
@@ -730,17 +733,17 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                         future = apiClass.getMethod("requestVerification", org.bukkit.entity.Player.class, boolean.class)
                                 .invoke(api, p, true);
                     } catch (NoSuchMethodException nsme) {
-                        getLogger().warning("HumanVerifyApi 没有 requestVerification(Player, boolean) 方法，跳过验证直接发奖。");
+                        warnVerifyMissingOnce("HumanVerifyApi 没有 requestVerification(Player, boolean) 方法，跳过验证直接发奖。");
                     }
                     if (future != null && !(future instanceof java.util.concurrent.CompletableFuture)) {
                         getLogger().warning("HumanVerifyApi.requestVerification 未返回 CompletableFuture，跳过验证直接发奖");
                         future = null;
                     }
                 } else {
-                    getLogger().warning("未能通过 ServicesManager 加载 HumanVerifyApi，跳过验证直接发奖。");
+                    warnVerifyMissingOnce("未能通过 ServicesManager 加载 HumanVerifyApi，跳过验证直接发奖。");
                 }
             } catch (ClassNotFoundException cnf) {
-                getLogger().warning("HumanVerifyApi 类未找到，跳过验证直接发奖。请确认 HumanVerify 已安装并先于本插件加载。");
+                warnVerifyMissingOnce("HumanVerifyApi 类未找到，跳过验证直接发奖。请确认 HumanVerify 已安装并先于本插件加载。");
             } catch (Throwable t) {
                 getLogger().log(Level.SEVERE, "调用人机验证 API 时出错，跳过验证直接发奖", t);
             }
@@ -826,10 +829,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             return;
         }
 
-        // Normal awarding — 注意：这里不能 resetStreak，否则连击永远累积不到阈值，
+        // 正常发奖——注意：这里不能 resetStreak，否则连击永远累积不到阈值，
         // anti-bot-correct-answer-threshold 将形同虚设。连击只靠时间窗口衰减/超时/验证/退出清理。
         clearQuestionState();
         awardWinner(player);
+    }
+
+    /** 验证服务缺失类告警只刷一次，后续降级走 fine 日志，避免无 HumanVerify 的服每题刷屏。 */
+    private void warnVerifyMissingOnce(String message) {
+        if (!verifyMissingWarned) {
+            verifyMissingWarned = true;
+            getLogger().warning(message);
+        } else {
+            getLogger().fine(message);
+        }
     }
 
     /** 重置某玩家的连击计数。 */
@@ -1093,6 +1106,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         private boolean handleReload(CommandSender sender) {
             boolean ok = loadConfigValues();
+            // 配置重载成功：缺失告警标记重置（可能刚装上 HumanVerify），失败回滚则保留
+            if (ok) verifyMissingWarned = false;
             // 重载时若正在验证：解锁并作废本轮，否则锁会一直占到验证超时
             if (verifying) {
                 if (verifyingPlayer != null) resetStreak(verifyingPlayer);
