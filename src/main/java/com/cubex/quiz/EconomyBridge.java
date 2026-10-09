@@ -157,20 +157,29 @@ public class EconomyBridge {
         if (econ == null) return 0.0;
         if (payerIsServer && bankSupport) {
             Double balance = extractBalance(invoke("bankBalance", new Class<?>[]{String.class}, who));
-            if (balance != null) return balance;
+            if (balance != null) return saneBalance(balance);
         }
         // 注意：invoke 内部已捕获全部异常并返回 null，外层无需 try-catch
         if (payerUsesUuid && payerOffline != null) {
             Object uuidResponse = invoke("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
-            if (uuidResponse instanceof Number) return ((Number) uuidResponse).doubleValue();
+            if (uuidResponse instanceof Number) return saneBalance(((Number) uuidResponse).doubleValue());
         }
         Object response = invoke("getBalance", new Class<?>[]{String.class}, who);
-        if (response instanceof Number) return ((Number) response).doubleValue();
+        if (response instanceof Number) return saneBalance(((Number) response).doubleValue());
         if (payerOffline != null) {
             Object offlineResponse = invoke("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
-            if (offlineResponse instanceof Number) return ((Number) offlineResponse).doubleValue();
+            if (offlineResponse instanceof Number) return saneBalance(((Number) offlineResponse).doubleValue());
         }
         return 0.0;
+    }
+
+    /**
+     * 余额消毒：Vault 后端异常时可能返回 NaN/无穷大，NaN 会让所有 >= 比较恒 false
+     * （暂停后永不恢复），统一按 0.0 处理。
+     */
+    private static double saneBalance(double v) {
+        if (Double.isNaN(v) || Double.isInfinite(v) || v < 0.0) return 0.0;
+        return v;
     }
 
     public double getPayerBalance() {
