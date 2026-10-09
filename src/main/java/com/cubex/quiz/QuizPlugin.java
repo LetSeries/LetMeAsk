@@ -35,6 +35,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     EconomyBridge economy;
     final QuestionMatcher matcher = new QuestionMatcher();
     final Messages messages = new Messages(this::getBaseCfg);
+    HumanVerifyBridge humanVerify;
 
     private final Random random = new Random();
 
@@ -63,8 +64,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private long verifyTimeoutSeconds;
     private long balanceRetrySeconds = 30L; // 暂停后每隔多少秒复查一次出资人余额
     private volatile long nextBalanceCheckMillis = 0L;
-    // 验证服务缺失告警只刷一次：无 HumanVerify 的服每次触发验证都会走降级，不能每题刷 warning
-    private volatile boolean verifyMissingWarned = false;
+    // 人机验证桥接已搬进 HumanVerifyBridge（反射调用+降级+一次性告警+结果判定）
     private boolean leaderboardBroadcastEnabled = true;
     private long leaderboardBroadcastMinutes = 60L;
     private int leaderboardBroadcastCount = 10;
@@ -115,6 +115,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
 
         economy = new EconomyBridge(getLogger());
+        humanVerify = new HumanVerifyBridge(getLogger());
         economyAvailable = setupEconomy();
         if (!economyAvailable) {
             getLogger().warning("未找到 Vault 经济插件：以“仅公告、无奖励”模式运行，安装 Vault 后请重启或重载插件");
@@ -719,34 +720,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             Player p = player;
             String reason = answeredTooFast ? "答题速度过快" : "连续答对次数过多";
 
-            // 按对接示例调用 HumanVerifyApi，要求该 API 在编译/运行时可用；
-            // 若对方包名不同，需自行调整。
-            // 注意：verifying 锁与广播放在确认 future 有效之后；验证服务缺失时直接发奖，不打扰玩家。
-            // 缺失类告警只刷一次：无 HumanVerify 的服每次触发验证都会走降级，不能每题刷 warning
-            Object future = null;
-            try {
-                // 使用反射调用 HumanVerifyApi，避免将第三方实现打进本插件。
-                Class<?> apiClass = Class.forName("org.cubexmc.humanverify.api.HumanVerifyApi");
-                Object api = Bukkit.getServicesManager().load(apiClass);
-                if (api != null) {
-                    try {
-                        future = apiClass.getMethod("requestVerification", org.bukkit.entity.Player.class, boolean.class)
-                                .invoke(api, p, true);
-                    } catch (NoSuchMethodException nsme) {
-                        warnVerifyMissingOnce("HumanVerifyApi 没有 requestVerification(Player, boolean) 方法，跳过验证直接发奖。");
-                    }
-                    if (future != null && !(future instanceof java.util.concurrent.CompletableFuture)) {
-                        getLogger().warning("HumanVerifyApi.requestVerification 未返回 CompletableFuture，跳过验证直接发奖");
-                        future = null;
-                    }
-                } else {
-                    warnVerifyMissingOnce("未能通过 ServicesManager 加载 HumanVerifyApi，跳过验证直接发奖。");
-                }
-            } catch (ClassNotFoundException cnf) {
-                warnVerifyMissingOnce("HumanVerifyApi 类未找到，跳过验证直接发奖。请确认 HumanVerify 已安装并先于本插件加载。");
-            } catch (Throwable t) {
-                getLogger().log(Level.SEVERE, "调用人机验证 API 时出错，跳过验证直接发奖", t);
-            }
+            // 验证调用已搬进 HumanVerifyBridge：反射+降级+一次性告警都在内部处理；
+            // 返回 null 表示服务不可用，调用方直接发奖。注意 verifying 锁与广播放在
+            // 确认 future 有效之后，缺失时不打扰玩家。
+            Object future = humanVerify.requestVerification(p);
 
             if (future == null) {
                 // 验证服务调不起来：按 README 承诺降级为直接发奖，不作废玩家答案
@@ -778,17 +755,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                         return;
                     }
                     try {
-                        // 通过比较枚举名称判断是否为 SUCCESS
-                        boolean ok = false;
-                        try {
-                            java.lang.reflect.Method nameM = result.getClass().getMethod("name");
-                            String nm = (String) nameM.invoke(result);
-                            ok = "SUCCESS".equals(nm);
-                        } catch (Exception e) {
-                            // fallback to toString
-                            ok = "SUCCESS".equals(result.toString());
-                        }
-                        final boolean passed = ok;
+                        // 结果判定已搬进 HumanVerifyBridge：枚举名 SUCCESS 或 toString 为 SUCCESS 即通过
+                        final boolean passed = humanVerify.isPassed(result);
 
                         Bukkit.getScheduler().runTask(this, () -> {
                             // 若已超时兜底/题目轮换/reload/force，直接丢弃过期回调
@@ -833,16 +801,6 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // anti-bot-correct-answer-threshold 将形同虚设。连击只靠时间窗口衰减/超时/验证/退出清理。
         clearQuestionState();
         awardWinner(player);
-    }
-
-    /** 验证服务缺失类告警只刷一次，后续降级走 fine 日志，避免无 HumanVerify 的服每题刷屏。 */
-    private void warnVerifyMissingOnce(String message) {
-        if (!verifyMissingWarned) {
-            verifyMissingWarned = true;
-            getLogger().warning(message);
-        } else {
-            getLogger().fine(message);
-        }
     }
 
     /** 重置某玩家的连击计数。 */
@@ -1107,7 +1065,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         private boolean handleReload(CommandSender sender) {
             boolean ok = loadConfigValues();
             // 配置重载成功：缺失告警标记重置（可能刚装上 HumanVerify），失败回滚则保留
-            if (ok) verifyMissingWarned = false;
+            if (ok) humanVerify.resetMissingWarning();
             // 重载时若正在验证：解锁并作废本轮，否则锁会一直占到验证超时
             if (verifying) {
                 if (verifyingPlayer != null) resetStreak(verifyingPlayer);

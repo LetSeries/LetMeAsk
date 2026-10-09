@@ -106,6 +106,36 @@ messages:
   prefix: "&6[教育部]"
 ```
 
+### messages 全键表
+
+所有用户可见文案都可在 `messages` 下自定义，支持 `&` 颜色码。
+占位符：`{arg}` 通用参数、`{arg2}` 第二参数、`{cmd}` 命令别名（如 `lma`，仅帮助菜单用）。
+
+| 键 | 说明 |
+|----|------|
+| `prefix` | 所有广播的前缀 |
+| `console-need-name` / `player-not-found` / `invalid-count` / `no-records` | 查询类提示 |
+| `unknown-command` / `no-permission` | 命令错误提示 |
+| `started` / `stopped` / `stopped-with-question` | 启停反馈 |
+| `question-posted` / `question-blocked` | 出题反馈 |
+| `reloaded` / `reloaded-empty` / `reload-dropped-verify` | 重载反馈 |
+| `kick-verify-timeout` / `kick-chat-too-fast` / `kick-verify-failed` | 踢人原因（显示在被踢画面） |
+| `announce-question` | 新题广播，`{arg}`=题目 |
+| `announce-funded` | 余额恢复广播，`{arg}`=余额、`{arg2}`=可奖励次数 |
+| `announce-verify-timeout-kick` / `announce-verify-timeout` | 验证超时广播 |
+| `announce-timeout` | 无人答对广播，`{arg}`=答案 |
+| `announce-chat-kick` | 刷屏踢人广播，`{arg}`=玩家名 |
+| `announce-verify-start` | 验证开始广播，`{arg}`=玩家名、`{arg2}`=原因 |
+| `announce-verify-failed` | 验证失败广播，`{arg}`=玩家名 |
+| `announce-win-no-vault` / `announce-win` / `announce-win-self` | 答对广播（无经济/零奖励/出资人自答），`{arg}`=玩家名 |
+| `announce-win-reward` | 正常发奖广播，`{arg}`=玩家名、`{arg2}`=金额 |
+| `announce-paused-funds` | 资金不足暂停，`{arg}`=需用、`{arg2}`=当前 |
+| `announce-transfer-failed` / `announce-refunded` / `announce-refund-failed` | 转账失败相关，`{arg}`=错误信息 |
+| `help-*` | 帮助菜单 11 行，`{cmd}`=实际输入的别名 |
+| `status-*` | 状态页 7 行 |
+
+注意：老服 `base.yml` 不会被新默认值覆盖（`saveResource` 只写不存在的文件），缺键时走代码内置默认值。
+
 ### questions.yml
 
 ```yaml
@@ -118,7 +148,21 @@ questions:
   - {q: "太阳系最大的行星是什么", a: "木星|Jupiter", weight: 2}
 ```
 
-统计数据保存在 `plugins/LetMeAsk/stats.yml`（累计出题/答对数、每人答对次数与奖金）。
+### stats.yml（自动生成）
+
+```yaml
+total-asked: 1234        # 累计出题数
+total-answered: 567      # 累计答对数
+players:
+  <UUID>:
+    correct: 10          # 该玩家答对次数
+    earned: 500.0        # 该玩家累计奖金
+    name: "Steve"        # 最后已知玩家名（top 榜显示用）
+```
+
+30 秒增量落盘（无变更不写文件），约 5 分钟全量一次，关服时全量保存。
+手动改 `stats.yml` 后需 `/lma reload`？**不需要**——统计只在启动时加载，运行时改文件会被下次落盘覆盖。
+想清榜请停服后删文件再开服。
 
 ## 构建
 
@@ -145,6 +189,29 @@ mvn clean package -Drevision=1.2.0
 CI 每次构建会自动追加 commit 短哈希（如 `2.0.0-a1b2c3d`），`latest` release 永远是最新构建。
 
 详见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 常见问题
+
+**Q：没装 Vault/HumanVerify 能用吗？**
+A：能。无 Vault 时纯公告无奖励；无 HumanVerify 时触发验证直接发奖（缺失告警只刷一次）。
+
+**Q：出了题没人答对怎么办？**
+A：`question-timeout-seconds` 超时后自动公布答案并出下一题，设 `0` 禁用超时。
+
+**Q：出题暂停了怎么恢复？**
+A：出资人余额不足时自动暂停，按 `balance-retry-seconds`（默认 30s）复查，充钱后自动恢复。余额恰好等于奖励时多留 1 美分再恢复，避免横跳。
+
+**Q：答对了没到账？**
+A：先看控制台有无"扣款失败/发放失败"日志。发放失败会自动退款；退款也失败会刷 severe 日志并公告"手动补账"，按日志里的出资人/玩家/金额手工处理。
+
+**Q：改了 base.yml 没生效？**
+A：改完执行 `/lma reload`。注意题库为空时 reload 整体回滚（旧配置不动），会提示"已保留旧题库与旧配置"。
+
+**Q：排行榜是空的还每小时广播？**
+A：不会。空榜时定时广播自动跳过，手动 `/lma top` 仍提示"暂无答题记录"。
+
+**Q：玩家改名了统计会丢吗？**
+A：不会。统计 key 是 UUID，名只做显示；改名后下次答对自动更新。
 
 ## 许可证
 

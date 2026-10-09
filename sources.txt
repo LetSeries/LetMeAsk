@@ -3,3 +3,4 @@ src/main/java/com/cubex/quiz/EconomyBridge.java
 src/main/java/com/cubex/quiz/QuestionMatcher.java
 src/main/java/com/cubex/quiz/Messages.java
 src/main/java/com/cubex/quiz/StatsStore.java
+src/main/java/com/cubex/quiz/HumanVerifyBridge.java
