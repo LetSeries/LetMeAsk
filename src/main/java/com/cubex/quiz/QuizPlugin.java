@@ -109,6 +109,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         saveResource("base.yml", false);
         saveResource("questions.yml", false);
 
+        // 子系统必须先构造：loadConfigValues() 内部经 resolvePayer 转发到 economy，
+        // 构造在后会导致启动 NPE（拆分重构引入的回归）
+        economy = new EconomyBridge(getLogger());
+        humanVerify = new HumanVerifyBridge(getLogger());
+        stats = new StatsStore(getLogger(), getDataFolder());
+
         // load configuration files
         if (!loadConfigValues()) {
             getLogger().severe("启动时题库为空，禁用插件。请在 questions.yml 中添加题目后重启。");
@@ -116,8 +122,6 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             return;
         }
 
-        economy = new EconomyBridge(getLogger());
-        humanVerify = new HumanVerifyBridge(getLogger());
         economyAvailable = setupEconomy();
         if (!economyAvailable) {
             getLogger().warning("未找到 Vault 经济插件：以“仅公告、无奖励”模式运行，安装 Vault 后请重启或重载插件");
@@ -143,7 +147,6 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // 启动定时出题任务（同时处理暂停恢复检查）
         startTask();
 
-        stats = new StatsStore(getLogger(), getDataFolder());
         loadStats();
         startLeaderboardTask();
         // 统计落盘：30 秒增量写（只写有变更的玩家），每 10 次做一次全量（约 5 分钟）
