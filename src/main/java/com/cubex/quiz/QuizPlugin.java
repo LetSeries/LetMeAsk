@@ -43,6 +43,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile Question currentQuestion = null;
     private volatile boolean paused = false; // paused due to payer insufficient funds
     private volatile boolean verifying = false; // question locked while human verification pending
+    // 验证三字段跨线程读写：主线程写（判定/清理/超时tick），验证回调线程读（whenComplete 比对）；
+    // volatile 保证可见性，复合校验（epoch+player+题目id三重）在主线程 runTask 内完成
     private volatile java.util.UUID verifyingPlayer = null;
     private volatile long verifyStartMillis = 0L;
     private volatile long verifyEpoch = 0L; // 验证轮次：reload/force/超时解锁时自增，旧回调直接丢弃
@@ -786,7 +788,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     } catch (Throwable t) {
                         getLogger().log(Level.SEVERE, "处理人机验证结果时出错", t);
                         Bukkit.getScheduler().runTask(this, () -> {
-                            resetStreak(p.getUniqueId());
+                            // 用 targetPlayer 而非闭包 p：p 是答对瞬间的引用，回调延迟执行时已过期
+                            resetStreak(targetPlayer);
                             clearQuestionState();
                         });
                     }
