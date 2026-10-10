@@ -889,7 +889,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         java.util.List<org.bukkit.inventory.ItemStack> items = itemRewards.roll();
         if (items.isEmpty()) return "";
         itemRewards.give(winner, items);
-        String desc = itemRewards.describe();
+        // 广播按实际 roll 出的物品描述，保证与实发一致（random-one 不再写死"随机物品"）
+        String desc = itemRewards.describe(items);
         if (desc.isEmpty()) return "";
         return msg("announce-win-items", "，另获 {arg}", desc);
     }

@@ -96,16 +96,37 @@ public class ItemRewards {
             } else if (amountObj != null) {
                 logger.warning("物品 " + material + " 数量不是数字，已按 1 处理。");
             }
-            spec.amount = Math.min(material.getMaxStackSize(), Math.max(1, amount));
+            int clamped = Math.min(material.getMaxStackSize(), Math.max(1, amount));
+            if (clamped != amount) {
+                logger.warning("物品 " + material + " 数量 " + amount + " 越界，已钳制为 " + clamped
+                        + "（范围 1~" + material.getMaxStackSize() + "）。");
+            }
+            spec.amount = clamped;
             Object nameObj = map.get("name");
             if (nameObj != null) spec.name = nameObj.toString().replace('&', '§');
             Object loreObj = map.get("lore");
             if (loreObj instanceof List) {
+                List<?> rawLore = (List<?>) loreObj;
+                if (rawLore.size() > 10) {
+                    logger.warning("物品 " + material + " lore 超过 10 行，仅保留前 10 行。");
+                }
                 List<String> lore = new ArrayList<>();
-                for (Object line : (List<?>) loreObj) {
-                    if (line != null) lore.add(line.toString().replace('&', '§'));
+                for (int i = 0; i < Math.min(rawLore.size(), 10); i++) {
+                    Object line = rawLore.get(i);
+                    if (line == null) continue;
+                    String text = line.toString();
+                    if (text.length() > 100) {
+                        logger.warning("物品 " + material + " lore 第 " + (i + 1) + " 行超长已截断。");
+                        text = text.substring(0, 100);
+                    }
+                    lore.add(text.replace('&', '§'));
                 }
                 if (!lore.isEmpty()) spec.lore = lore;
+            }
+            Object nameCheck = map.get("name");
+            if (nameCheck != null && nameCheck.toString().length() > 50) {
+                logger.warning("物品 " + material + " 自定义名超长已截断。");
+                spec.name = nameCheck.toString().substring(0, 50).replace('&', '§');
             }
             Object enchObj = map.get("enchantments");
             if (enchObj instanceof Map) {
@@ -221,15 +242,46 @@ public class ItemRewards {
         return bagged;
     }
 
-    /** 展示名：用于广播（如 "2x 钻石"），取首条规格。 */
-    public String describe() {
+    /**
+     * 展示名：根据实际 roll 出的物品生成（如 "2x Diamond"），保证广播与实发一致。
+     * random-one 时只描述抽中的那一件，不再写死"随机物品"。
+     */
+    public String describe(List<ItemStack> rolled) {
+        if (rolled == null || rolled.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < rolled.size(); i++) {
+            if (i > 0) sb.append("、");
+            ItemStack item = rolled.get(i);
+            if (item == null) continue;
+            sb.append(item.getAmount()).append("x ").append(displayNameOf(item));
+        }
+        return sb.toString();
+    }
+
+    /** 展示名后备：配置规格描述（roll 前预览用，如 status 页）。 */
+    public String describeSpecs() {
         if (!isEnabled()) return "";
-        if (randomOne) return "随机物品";
+        if (randomOne) return "随机物品（" + specs.size() + " 选 1）";
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < specs.size(); i++) {
             if (i > 0) sb.append("、");
             ItemSpec s = specs.get(i);
             sb.append(s.amount).append("x ").append(prettyName(s));
+        }
+        return sb.toString();
+    }
+
+    /** 物品展示名：自定义名优先，否则材质可读名。 */
+    private String displayNameOf(ItemStack item) {
+        try {
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null && meta.hasDisplayName()) return meta.getDisplayName();
+        } catch (Throwable ignored) {}
+        String[] parts = item.getType().name().toLowerCase(Locale.ROOT).split("_");
+        StringBuilder sb = new StringBuilder();
+        for (String p : parts) {
+            if (sb.length() > 0) sb.append(' ');
+            if (!p.isEmpty()) sb.append(Character.toUpperCase(p.charAt(0))).append(p.substring(1));
         }
         return sb.toString();
     }
