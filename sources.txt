@@ -4,3 +4,4 @@ src/main/java/com/cubex/quiz/QuestionMatcher.java
 src/main/java/com/cubex/quiz/Messages.java
 src/main/java/com/cubex/quiz/StatsStore.java
 src/main/java/com/cubex/quiz/HumanVerifyBridge.java
+src/main/java/com/cubex/quiz/ItemRewards.java

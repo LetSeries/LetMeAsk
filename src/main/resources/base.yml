@@ -38,6 +38,15 @@ leaderboard-broadcast:
   minutes: 60
   count: 10
 
+# 物品奖励：与金币叠加发放，背包满掉在脚下
+# random-one: true=每次随机其一，false=全发；name/lore/enchantments 可选
+items:
+  enabled: false
+  random-one: false
+  list:
+    - {material: DIAMOND, amount: 2}
+    - {material: GOLD_INGOT, amount: 1, name: "&6幸运金锭", lore: ["&7答题奖励"], enchantments: {luck: 1}}
+
 # 答对庆祝特效：只给答对者发 Title，音效全服可听
 # sound 为 Bukkit Sound 枚举名，设为 none 可关闭音效
 celebrate:
@@ -83,6 +92,7 @@ messages:
   announce-win: " §a玩家 §f{arg} §a答对了问题！"
   announce-win-self: " §a玩家 §f{arg} §a答对了问题！§7（出资人自答，无需转账）"
   announce-win-reward: " §a玩家 §f{arg} §a答对了问题，获得 §e{arg2} §a货币！"
+  announce-win-items: "，另获 {arg}"
   announce-paused-funds: " §c出题已暂停：资金不足（需要 {arg}，当前 {arg2}）。"
   announce-transfer-failed: " §c转账失败（错误: {arg}），出题已暂停。请检查服务器日志。"
   announce-refunded: " §c发放奖励失败，已退款，请联系管理员。错误: {arg}"

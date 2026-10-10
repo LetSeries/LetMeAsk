@@ -11,6 +11,7 @@
 - **人机验证**：答题过快或连续答对过多时触发 HumanVerify 验证
 - **防脚本枚举**：本轮题目期间聊天刷屏过快直接踢出（`anti-bot-chat-*` 配置）
 - **答对特效**：答对者收到 Title 标题，全服播放升级音效（均可在 `celebrate` 下配置开关）
+- **物品奖励**：与金币叠加发放，支持自定义名/lore/附魔，可随机其一，背包满掉地上（`items` 配置）
 - **灵活配置**：支持玩家名、UUID、服务器账户、LittleSkin 等支付方式
 
 注意: 人机验证需要依赖[HumanVerify](https://github.com/FZAoao/HumanVerify)插件。如果没有它，人机验证功能将无法使用，但是基本功能不会影响。
@@ -101,6 +102,15 @@ celebrate:
   volume: 1.0
   pitch: 1.0
 
+# 物品奖励：与金币叠加发放，背包满掉在脚下
+# random-one: true=每次随机其一，false=全发；name/lore/enchantments 可选
+items:
+  enabled: false
+  random-one: false
+  list:
+    - {material: DIAMOND, amount: 2}
+    - {material: GOLD_INGOT, amount: 1, name: "&6幸运金锭", lore: ["&7答题奖励"], enchantments: {luck: 1}}
+
 # 消息前缀
 messages:
   prefix: "&6[教育部]"
@@ -129,6 +139,7 @@ messages:
 | `announce-verify-failed` | 验证失败广播，`{arg}`=玩家名 |
 | `announce-win-no-vault` / `announce-win` / `announce-win-self` | 答对广播（无经济/零奖励/出资人自答），`{arg}`=玩家名 |
 | `announce-win-reward` | 正常发奖广播，`{arg}`=玩家名、`{arg2}`=金额 |
+| `announce-win-items` | 物品奖励后缀，`{arg}`=物品描述（如"2x Diamond"） |
 | `announce-paused-funds` | 资金不足暂停，`{arg}`=需用、`{arg2}`=当前 |
 | `announce-transfer-failed` / `announce-refunded` / `announce-refund-failed` | 转账失败相关，`{arg}`=错误信息 |
 | `help-*` | 帮助菜单 11 行，`{cmd}`=实际输入的别名 |

@@ -36,6 +36,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     final QuestionMatcher matcher = new QuestionMatcher();
     final Messages messages = new Messages(this::getBaseCfg);
     HumanVerifyBridge humanVerify;
+    ItemRewards itemRewards;
 
     private final Random random = new Random();
 
@@ -114,6 +115,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         economy = new EconomyBridge(getLogger());
         humanVerify = new HumanVerifyBridge(getLogger());
         stats = new StatsStore(getLogger(), getDataFolder());
+        itemRewards = new ItemRewards(getLogger());
 
         // load configuration files
         if (!loadConfigValues()) {
@@ -298,6 +300,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         celebrateSound = baseCfg.getString("celebrate.sound", "ENTITY_PLAYER_LEVELUP");
         celebrateVolume = (float) Math.max(0.0, baseCfg.getDouble("celebrate.volume", 1.0));
         celebratePitch = (float) Math.max(0.0, baseCfg.getDouble("celebrate.pitch", 1.0));
+        // 物品奖励：缺失/非法时内部整体禁用，不影响金币流程
+        if (itemRewards != null) itemRewards.load(baseCfg);
 
         // resolve payer to a stable identifier (UUID/name/Server/LittleSkin)
         resolvePayer(payerName);
@@ -875,25 +879,40 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
     }
 
+    /**
+     * 发放物品奖励（与金币叠加）：配置未启用直接返回空串；
+     * 启用则 roll+give，返回可追加到广播的后缀（如“，另获 2x Diamond”），无后缀返回空串。
+     * 背包满掉脚下，由 ItemRewards 内部处理。
+     */
+    private String giveItems(Player winner) {
+        if (itemRewards == null || !itemRewards.isEnabled()) return "";
+        java.util.List<org.bukkit.inventory.ItemStack> items = itemRewards.roll();
+        if (items.isEmpty()) return "";
+        itemRewards.give(winner, items);
+        String desc = itemRewards.describe();
+        if (desc.isEmpty()) return "";
+        return msg("announce-win-items", "，另获 {arg}", desc);
+    }
+
     private void awardWinner(Player winner) {
         // 无 Vault 时降级为纯公告模式，不暂停出题
         if (!economyAvailable) {
             recordCorrect(winner, 0.0);
-            broadcastLegacy(messagePrefix() + msg("announce-win-no-vault", " §a玩家 §f{arg} §a答对了问题！§7（未安装 Vault，本轮无货币奖励）", winner.getName()));
+            broadcastLegacy(messagePrefix() + msg("announce-win-no-vault", " §a玩家 §f{arg} §a答对了问题！§7（未安装 Vault，本轮无货币奖励）", winner.getName()) + giveItems(winner));
             celebrate(winner, 0.0);
             return;
         }
         // 奖励为 0：跳过全部转账调用，直接公告
         if (rewardAmount <= 0.0) {
             recordCorrect(winner, 0.0);
-            broadcastLegacy(messagePrefix() + msg("announce-win", " §a玩家 §f{arg} §a答对了问题！", winner.getName()));
+            broadcastLegacy(messagePrefix() + msg("announce-win", " §a玩家 §f{arg} §a答对了问题！", winner.getName()) + giveItems(winner));
             celebrate(winner, 0.0);
             return;
         }
         // 答对者就是出资人：左手倒右手，跳过转账
         if (isPayer(winner)) {
             recordCorrect(winner, 0.0);
-            broadcastLegacy(messagePrefix() + msg("announce-win-self", " §a玩家 §f{arg} §a答对了问题！§7（出资人自答，无需转账）", winner.getName()));
+            broadcastLegacy(messagePrefix() + msg("announce-win-self", " §a玩家 §f{arg} §a答对了问题！§7（出资人自答，无需转账）", winner.getName()) + giveItems(winner));
             celebrate(winner, 0.0);
             return;
         }
@@ -942,7 +961,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         recordCorrect(winner, rewardAmount);
         broadcastLegacy(messagePrefix() + msg3("announce-win-reward", " §a玩家 §f{arg} §a答对了问题，获得 §e{arg2} §a货币！",
-                null, winner.getName(), String.format(Locale.ROOT, "%,.2f", rewardAmount)));
+                null, winner.getName(), String.format(Locale.ROOT, "%,.2f", rewardAmount)) + giveItems(winner));
         celebrate(winner, rewardAmount);
     }
 
