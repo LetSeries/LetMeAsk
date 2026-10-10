@@ -12,6 +12,7 @@
 - **防脚本枚举**：本轮题目期间聊天刷屏过快直接踢出（`anti-bot-chat-*` 配置）
 - **答对特效**：答对者收到 Title 标题，全服播放升级音效（均可在 `celebrate` 下配置开关）
 - **物品奖励**：与金币叠加发放，支持自定义名/lore/附魔，可随机其一，背包满掉地上（`items` 配置）
+- **多语言**：`language: zh/en` 一键切换，英文段缺键自动回退中文
 - **灵活配置**：支持玩家名、UUID、服务器账户、LittleSkin 等支付方式
 
 注意: 人机验证需要依赖[HumanVerify](https://github.com/FZAoao/HumanVerify)插件。如果没有它，人机验证功能将无法使用，但是基本功能不会影响。
@@ -114,7 +115,19 @@ items:
 # 消息前缀
 messages:
   prefix: "&6[教育部]"
+  # ...（查询/管理/游戏流程/帮助/状态共 60+ 键，见 base.yml）
 ```
+
+### 多语言（`language`）
+
+```yaml
+# zh=中文（默认），en=英文
+language: zh
+```
+
+设为 `en` 时所有文案读 `messages-en` 段（58 个键，与中文一一对应），
+缺键自动回退中文，所以老服升级无感——`messages-en` 整段缺失也能跑。
+`status` 页的是/否/运行中走 `common-yes/no/running/stopped/none` 通用键，同样中英切换。
 
 ### messages 全键表
 

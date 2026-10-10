@@ -277,6 +277,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         baseCfg = newBase;
         questionsCfg = newQuestions;
         messages.invalidateCache(); // base.yml 已重载，前缀缓存失效
+        messages.setLanguage(baseCfg.getString("language", "zh")); // 语言开关：zh/en，其他值回退中文
 
         payerName = baseCfg.getString("payer", "Server");
         rewardAmount = Math.max(0.0, baseCfg.getDouble("reward", 50.0));
@@ -1158,13 +1159,16 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         private void sendStatus(CommandSender sender) {
             sender.sendMessage(msg("status-header", "&6LetMeAsk 状态:", null));
+            // 是/否/运行中走可配置，便于英文模式切换（common-yes/no/running）
+            String yes = msg("common-yes", "§c是", null);
+            String no = msg("common-no", "§a否", null);
             sender.sendMessage(msg("status-task", " 自动出题: {arg}",
-                    tickerTask != null ? "§a运行中" : "§c已停止"));
+                    tickerTask != null ? msg("common-running", "§a运行中", null) : msg("common-stopped", "§c已停止", null)));
             sender.sendMessage(msg("status-questions", " 题库数量: §f{arg}", String.valueOf(questions.size())));
             sender.sendMessage(msg("status-current", " 当前题目: {arg}",
-                    currentQuestion != null ? currentQuestion.question : "无"));
-            sender.sendMessage(msg("status-paused", " 暂停(余额不足): {arg}", paused ? "§c是" : "§a否"));
-            sender.sendMessage(msg("status-verifying", " 人机验证锁定: {arg}", verifying ? "§c是" : "§a否"));
+                    currentQuestion != null ? currentQuestion.question : msg("common-none", "无", null)));
+            sender.sendMessage(msg("status-paused", " 暂停(余额不足): {arg}", paused ? yes : no));
+            sender.sendMessage(msg("status-verifying", " 人机验证锁定: {arg}", verifying ? yes : no));
             sender.sendMessage(msg3("status-total", " 累计出题: §f{arg} §7已答对: §f{arg2}",
                     null, String.valueOf(stats.getTotalAsked()), String.valueOf(stats.getTotalAnswered())));
             if (economyAvailable) {

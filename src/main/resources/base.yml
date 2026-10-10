@@ -14,6 +14,8 @@
 
 payer: Server
 reward: 50.0
+# 语言：zh=中文（默认），en=英文（读下方 messages-en 段，可自行覆盖）
+language: zh
 # 自动出题间隔（秒），最小 5 秒
 question-interval-seconds: 60
 question-timeout-seconds: 30
@@ -61,6 +63,12 @@ celebrate:
 # 查询类提示消息也可在下方自定义（支持 & 颜色码，{arg} 为参数占位）
 messages:
   prefix: "&6[教育部]"
+  # 通用词（状态页是/否/运行中/无，供中英文切换）
+  common-yes: "§c是"
+  common-no: "§a否"
+  common-running: "§a运行中"
+  common-stopped: "§c已停止"
+  common-none: "无"
   console-need-name: "&c控制台请指定玩家名：/letmeask stats <玩家名>"
   player-not-found: "&c找不到玩家: {arg}"
   invalid-count: "&c数量参数无效，使用默认值 10"
@@ -116,3 +124,64 @@ messages:
   status-paused: " 暂停(余额不足): {arg}"
   status-verifying: " 人机验证锁定: {arg}"
   status-total: " 累计出题: §f{arg} §7已答对: §f{arg2}"
+
+# English messages (used when language: en; missing keys fall back to messages above)
+messages-en:
+  prefix: "&6[Quiz]"
+  common-yes: "§cYes"
+  common-no: "§aNo"
+  common-running: "§aRunning"
+  common-stopped: "§cStopped"
+  common-none: "None"
+  console-need-name: "&cConsole must specify a player: /letmeask stats <player>"
+  player-not-found: "&cPlayer not found: {arg}"
+  invalid-count: "&cInvalid count, using default 10"
+  no-records: "&eNo records yet"
+  unknown-command: "&cUnknown subcommand: {arg}"
+  no-permission: "&cYou lack permission (letmeask.admin)"
+  started: "&aQuiz scheduler started"
+  stopped: "&cQuiz scheduler stopped"
+  stopped-with-question: "&cQuiz scheduler stopped (current question voided)"
+  question-posted: "&aNew question posted"
+  question-blocked: "&cCannot post (active question/verifying/paused). Use /letmeask question force"
+  reload-dropped-verify: "&eDropped pending verification on reload"
+  reloaded: "&aConfig reloaded (base.yml & questions.yml)"
+  reloaded-empty: "&eConfig reloaded but question bank empty, kept old bank & config"
+  kick-verify-timeout: "Human verification timed out"
+  kick-chat-too-fast: "Chat interval too short"
+  kick-verify-failed: "Failed human verification"
+  announce-question: " §fNew question: §f{arg}"
+  announce-funded: " §aFunds restored. Balance: {arg}, about {arg2} more rewards."
+  announce-verify-timeout-kick: " §cPlayer {arg} kicked for verification timeout, round voided."
+  announce-verify-timeout: " §cVerification timed out, round voided."
+  announce-timeout: " §cNo one answered! Answer: §f{arg}"
+  announce-chat-kick: " §cPlayer §f{arg} §ckicked for spamming."
+  announce-verify-start: " §cPlayer §f{arg} §c{arg2}, verification required..."
+  announce-verify-failed: " §cPlayer §f{arg} §cfailed verification and was kicked."
+  announce-win-no-vault: " §aPlayer §f{arg} §aanswered correctly! §7(No Vault, no money reward)"
+  announce-win: " §aPlayer §f{arg} §aanswered correctly!"
+  announce-win-self: " §aPlayer §f{arg} §aanswered correctly! §7(Self-funded, no transfer)"
+  announce-win-reward: " §aPlayer §f{arg} §aanswered correctly, won §e{arg2}§a!"
+  announce-win-items: ", plus {arg}"
+  announce-paused-funds: " §cPaused: insufficient funds (need {arg}, have {arg2})."
+  announce-transfer-failed: " §cTransfer failed ({arg}), paused. Check console."
+  announce-refunded: " §cPayout failed, refunded. Contact staff. Error: {arg}"
+  announce-refund-failed: " §cPayout AND refund failed! Contact staff for manual compensation. Error: {arg}"
+  help-header: "&6&m----------&r &6LetMeAsk Help &6&m----------"
+  help-help: "&e/{cmd} help &7- Show this help"
+  help-top: "&e/{cmd} top [count] &7- Leaderboard (default 10, max 20)"
+  help-stats: "&e/{cmd} stats [player] &7- View stats (default self)"
+  help-status: "&e/{cmd} status &7- Plugin status"
+  help-admin-header: "&6Admin:"
+  help-start: "&e/{cmd} start &7- Start scheduler"
+  help-stop: "&e/{cmd} stop &7- Stop scheduler"
+  help-question: "&e/{cmd} question [force] &7- Post a question (force)"
+  help-reload: "&e/{cmd} reload &7- Reload config"
+  help-footer: "&6&m--------------------------------"
+  status-header: "&6LetMeAsk Status:"
+  status-task: " Scheduler: {arg}"
+  status-questions: " Questions: &f{arg}"
+  status-current: " Current: {arg}"
+  status-paused: " Paused (funds): {arg}"
+  status-verifying: " Verifying: {arg}"
+  status-total: " Asked: §f{arg} §7Answered: §f{arg2}"
