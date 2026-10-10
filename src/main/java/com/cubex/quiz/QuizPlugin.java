@@ -208,6 +208,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
      * 加载配置。先验题库再应用 base.yml：题库为空则整体回滚（旧题库+旧配置都不动），
      * 返回 false；调用方据此决定禁用插件（启动时）还是报错继续运行（reload 时）。
      */
+    /** 题库规模上限：防 YAML 炸弹/误粘贴超大文件拖慢 reload（解析前先截断，多余的记 warning）。 */
+    private static final int MAX_QUESTIONS = 5000;
+    /** 单题题目/答案长度上限：超长条目跳过并告警（防恶意超长文本进广播刷屏）。 */
+    private static final int MAX_QUESTION_LEN = 200;
+    private static final int MAX_ANSWER_LEN = 100;
+
     private boolean loadConfigValues() {
         // load base and questions from their own files
         baseFile = new File(getDataFolder(), "base.yml");
@@ -215,14 +221,28 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         try {
             if (!baseFile.exists()) saveResource("base.yml", false);
             if (!questionsFile.exists()) saveResource("questions.yml", false);
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            getLogger().log(Level.WARNING, "释放默认配置文件失败", e);
+        }
 
-        FileConfiguration newBase = YamlConfiguration.loadConfiguration(baseFile);
-        FileConfiguration newQuestions = YamlConfiguration.loadConfiguration(questionsFile);
+        FileConfiguration newBase;
+        FileConfiguration newQuestions;
+        try {
+            newBase = YamlConfiguration.loadConfiguration(baseFile);
+            newQuestions = YamlConfiguration.loadConfiguration(questionsFile);
+        } catch (Exception e) {
+            // YAML 语法损坏：整体回滚，保留旧配置继续运行（之前静默吞异常，服主无感知）
+            getLogger().log(Level.SEVERE, "配置文件 YAML 解析失败，已保留旧配置。请检查 base.yml/questions.yml 语法。", e);
+            return false;
+        }
 
         // 先验题库：解析到临时列表，空则整体回滚（base.yml 字段与出资人都不动）
         // 条目可以是纯字符串（"题目=答案"，权重 1），也可以是 map（{q, a, weight}）
         List<?> raw = newQuestions.getList("questions");
+        if (raw != null && raw.size() > MAX_QUESTIONS) {
+            getLogger().warning("题库条目过多（" + raw.size() + "），仅加载前 " + MAX_QUESTIONS + " 条。");
+            raw = raw.subList(0, MAX_QUESTIONS);
+        }
         boolean usingFallback = false;
         if (raw == null || raw.isEmpty()) {
             if (questions.isEmpty()) {
@@ -334,6 +354,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 continue;
             }
             if (q.isEmpty() || a.isEmpty()) continue;
+            // 长度上限：超长条目跳过并告警，防恶意/误粘贴超长文本进全服广播
+            if (q.length() > MAX_QUESTION_LEN) {
+                getLogger().warning("题目过长（" + q.length() + " 字）已跳过: " + q.substring(0, 30) + "...");
+                continue;
+            }
+            if (a.length() > MAX_ANSWER_LEN * 5) {
+                getLogger().warning("题目答案过长已跳过: " + q);
+                continue;
+            }
             if (!seen.add(q)) {
                 getLogger().warning("题库存在重复题目，已跳过: " + q);
                 continue;
@@ -901,8 +930,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 broadcastLegacy(messagePrefix() + msg("announce-refunded", " §c发放奖励失败，已退款，请联系管理员。错误: {arg}", err));
             } else {
                 // 退款也失败：出资人已被扣款，玩家未到账，必须人工介入，不能谎称已退款
+                // 日志脱敏：玩家名只留 UUID 前 8 位用于对账，不记全名；金额保留（补账必需）
+                String uuidShort = winner.getUniqueId().toString().substring(0, 8);
                 getLogger().severe("退款失败！出资人 " + payerDisplay() + " 已被扣 " + rewardAmount
-                        + "，玩家 " + winner.getName() + " 未到账。请手动补账。发放错误: " + err
+                        + "，玩家[" + uuidShort + "]未到账。请手动补账。发放错误: " + err
                         + "，退款错误: " + getEconomyResponseError(refund));
                 broadcastLegacy(messagePrefix() + msg("announce-refund-failed", " §c发放奖励失败，且自动退款失败！请联系管理员手动补账。错误: {arg}", err));
             }
@@ -1087,8 +1118,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
 
         private void sendHelp(CommandSender sender, String label) {
-            // 用玩家实际输入的别名展示（如 /lma 进来就显示 /lma），复制即用
-            String cmd = (label == null || label.isEmpty()) ? "letmeask" : label;
+            // 用玩家实际输入的别名展示（如 /lma 进来就显示 /lma），复制即用；
+            // 白名单校验：label 来自命令注册，正常只有 letmeask/lma，异常值回退默认
+            // （防其他插件伪造命令转发时注入换行/颜色码破坏聊天格式）
+            String cmd = ("lma".equalsIgnoreCase(label)) ? "lma" : "letmeask";
             sender.sendMessage(msg("help-header", "&6&m----------&r &6LetMeAsk 帮助 &6&m----------", null));
             // 帮助行从注册表循环生成：新增子命令只需在 commands 加一行，不会再漏
             boolean adminSection = false;
