@@ -24,6 +24,10 @@ anti-bot-threshold-seconds: 1
 # 答对时检查本轮题目期间最近 3 条消息的间隔；低于 0.5 秒踢出
 anti-bot-chat-history-count: 3
 anti-bot-chat-min-interval-seconds: 0.5
+# 答错反馈：只提示本人，冷却秒内不重复提示；enabled 设 false 关闭
+wrong-feedback:
+  enabled: true
+  cooldown-seconds: 5
 # 同一玩家连续答对达到此次数时触发人机验证；设置为 0 可禁用此条件
 anti-bot-correct-answer-threshold: 3
 # 连击统计时间窗口（秒）：超过该时间未答对则连击清零；0=不清零
@@ -93,6 +97,7 @@ messages:
   announce-verify-timeout-kick: " §c玩家 {arg} 因人机验证超时被踢出服务器，本轮题目作废。"
   announce-verify-timeout: " §c人机验证超时，本轮题目作废。"
   announce-timeout: " §c无人答对！答案是: §f{arg}"
+  announce-wrong: " §c回答错误，再想想！"
   announce-chat-kick: " §c玩家 §f{arg} §c因聊天消息间隔过短被踢出服务器。"
   announce-verify-start: " §c玩家 §f{arg} §c{arg2}，需要进行人机验证..."
   announce-verify-failed: " §c玩家 §f{arg} §c未通过人机验证，已被踢出服务器。"
@@ -155,6 +160,7 @@ messages-en:
   announce-verify-timeout-kick: " §cPlayer {arg} kicked for verification timeout, round voided."
   announce-verify-timeout: " §cVerification timed out, round voided."
   announce-timeout: " §cNo one answered! Answer: §f{arg}"
+  announce-wrong: " §cWrong answer, try again!"
   announce-chat-kick: " §cPlayer §f{arg} §ckicked for spamming."
   announce-verify-start: " §cPlayer §f{arg} §c{arg2}, verification required..."
   announce-verify-failed: " §cPlayer §f{arg} §cfailed verification and was kicked."

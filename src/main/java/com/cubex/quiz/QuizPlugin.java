@@ -64,6 +64,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     // 模糊阈值已搬进 QuestionMatcher（自带 volatile），主类不再持有
     private volatile int antiBotChatHistoryCount;
     private volatile double antiBotChatMinIntervalSeconds;
+    // 答错反馈：只提示本人，可配置开关+冷却（防刷屏）；0=关闭
+    private volatile boolean wrongFeedbackEnabled = true;
+    private volatile long wrongFeedbackCooldownSeconds = 5L;
+    private final Map<java.util.UUID, Long> wrongFeedbackLast = new HashMap<>();
     private long verifyTimeoutSeconds;
     private long balanceRetrySeconds = 30L; // 暂停后每隔多少秒复查一次出资人余额
     private volatile long nextBalanceCheckMillis = 0L;
@@ -210,8 +214,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
      * 加载配置。先验题库再应用 base.yml：题库为空则整体回滚（旧题库+旧配置都不动），
      * 返回 false；调用方据此决定禁用插件（启动时）还是报错继续运行（reload 时）。
      */
-    /** 题库规模上限：防 YAML 炸弹/误粘贴超大文件拖慢 reload（解析前先截断，多余的记 warning）。 */
-    private static final int MAX_QUESTIONS = 5000;
+    /**
+     * 题库条目上限 20000：实测 15000 条解析约 0.4s、内存不足 1MB，
+     * 出题是 O(n) 求和但 15000 条单次仅约 0.5μs，匹配只针对当前题与聊天消息，
+     * 题库规模不影响热路径——上限提到 20000 留余量。
+     * 真正的炸弹是超大文件，另设 5MB 文件上限先拦截。
+     */
+    private static final int MAX_QUESTIONS = 20000;
+    private static final long MAX_QUESTIONS_FILE_BYTES = 5L * 1024 * 1024;
     /** 单题题目/答案长度上限：超长条目跳过并告警（防恶意超长文本进广播刷屏）。 */
     private static final int MAX_QUESTION_LEN = 200;
     private static final int MAX_ANSWER_LEN = 100;
@@ -230,6 +240,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         FileConfiguration newBase;
         FileConfiguration newQuestions;
         try {
+            // 文件级熔断：超大 questions.yml 直接拒载，避免 SnakeYAML 解析卡死主线程
+            if (questionsFile.exists() && questionsFile.length() > MAX_QUESTIONS_FILE_BYTES) {
+                getLogger().severe("questions.yml 过大（" + (questionsFile.length() / 1024 / 1024)
+                        + "MB，上限 5MB），已保留旧题库与旧配置。请拆分题库。");
+                return false;
+            }
             newBase = YamlConfiguration.loadConfiguration(baseFile);
             newQuestions = YamlConfiguration.loadConfiguration(questionsFile);
         } catch (Exception e) {
@@ -288,6 +304,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         antiBotStreakWindowSeconds = Math.max(0L, baseCfg.getLong("anti-bot-streak-window-seconds", 300L));
         antiBotChatHistoryCount = Math.max(2, baseCfg.getInt("anti-bot-chat-history-count", 3));
         antiBotChatMinIntervalSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-chat-min-interval-seconds", 0.5));
+        wrongFeedbackEnabled = baseCfg.getBoolean("wrong-feedback.enabled", true);
+        wrongFeedbackCooldownSeconds = Math.max(0L, baseCfg.getLong("wrong-feedback.cooldown-seconds", 5L));
         verifyTimeoutSeconds = Math.max(10L, baseCfg.getLong("verify-timeout-seconds", 120L));
         balanceRetrySeconds = Math.max(5L, baseCfg.getLong("balance-retry-seconds", 30L));
         matcher.setFuzzySimilarityThreshold(
@@ -677,7 +695,23 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         if (correctAnswer) {
             // 切主线程发奖，携带题目 id：若题目已轮换/作废则拒绝，防止旧题答案领走新题奖励
             Bukkit.getScheduler().runTask(this, () -> handleCorrectAnswer(player, snapshot.id, chatTooFast));
+        } else {
+            // 答错反馈：只提示本人（不广播），按冷却节流防刷屏
+            maybeWrongFeedback(player, messageTime);
         }
+    }
+
+    /** 答错反馈：开关+冷却都在配置里，冷却内直接跳过。 */
+    private void maybeWrongFeedback(Player player, long messageTime) {
+        if (!wrongFeedbackEnabled) return;
+        long cooldownMillis = Math.max(0L, wrongFeedbackCooldownSeconds) * 1000L;
+        java.util.UUID uuid = player.getUniqueId();
+        synchronized (wrongFeedbackLast) {
+            Long last = wrongFeedbackLast.get(uuid);
+            if (last != null && messageTime - last < cooldownMillis) return;
+            wrongFeedbackLast.put(uuid, messageTime);
+        }
+        sendLegacy(player, messagePrefix() + msg("announce-wrong", " §c回答错误，再想想！", null));
     }
 
     @EventHandler
@@ -685,6 +719,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         // 玩家离线即清理连击记录，防止长期在线服 Map 无限增长
         java.util.UUID uuid = event.getPlayer().getUniqueId();
         resetStreak(uuid);
+        synchronized (wrongFeedbackLast) {
+            wrongFeedbackLast.remove(uuid);
+        }
         // 被验证人退出：直接作废本轮（epoch 自增使旧回调失效），否则题目锁到验证超时
         if (verifying && uuid.equals(verifyingPlayer)) {
             clearQuestionState();
