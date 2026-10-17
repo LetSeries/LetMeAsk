@@ -340,7 +340,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     /**
      * 解析题库条目。支持两种格式（可混用）：
      * <ul>
-     *   <li>纯字符串: "题目=答案1|答案2"，权重默认为 1</li>
+     *   <li>纯字符串: "题目=答案1|答案2"，权重默认为 1；题目/答案内含 = 或 : 时写成 \= 、\: 转义</li>
      *   <li>map: {q: "题目", a: "答案1|答案2", weight: 3}，weight 越大越容易被抽中（1~10000）</li>
      * </ul>
      * 非法行与重复题目跳过。
@@ -368,9 +368,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 }
             } else if (entry instanceof String) {
                 String line = (String) entry;
-                String[] parts = line.split("=", 2);
-                if (parts.length < 2) parts = line.split(":", 2);
-                if (parts.length < 2) continue;
+                // 分隔符取第一个未被转义的 = 或 :（= 优先），\= / \: 视为题目或答案里的字面量
+                String[] parts = splitQALine(line);
+                if (parts == null) continue;
                 q = parts[0].trim();
                 a = parts[1].trim();
             } else {
@@ -402,6 +402,51 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             parsed.add(new Question(q, answers, weight));
         }
         return parsed;
+    }
+
+    /**
+     * 切分"题目=答案"行：取第一个<b>未被转义</b>的分隔符（= 优先，没有 = 才用 :）。
+     * 题目或答案本身含 = / : 时写成 \= / \:，解析后还原成字面量（\\ 还原成单个反斜杠）。
+     * 无分隔符返回 null。
+     */
+    private static String[] splitQALine(String line) {
+        int sepIndex = findUnescapedSeparator(line, '=');
+        if (sepIndex < 0) sepIndex = findUnescapedSeparator(line, ':');
+        if (sepIndex < 0) return null;
+        return new String[]{
+                unescapeQALine(line.substring(0, sepIndex)),
+                unescapeQALine(line.substring(sepIndex + 1))
+        };
+    }
+
+    /** 找第一个未被反斜杠转义的目标分隔符下标；被奇数个连续反斜杠前缀的视为转义。 */
+    private static int findUnescapedSeparator(String line, char target) {
+        for (int i = 0; i < line.length(); i++) {
+            if (line.charAt(i) != target) continue;
+            int backslashes = 0;
+            for (int j = i - 1; j >= 0 && line.charAt(j) == '\\'; j--) backslashes++;
+            if ((backslashes & 1) == 0) return i; // 偶数个反斜杠 = 未转义
+        }
+        return -1;
+    }
+
+    /** 还原转义：\= → =、\: → :、\\ → \；其他反斜杠原样保留（避免吞掉题目里的路径/LaTeX）。 */
+    private static String unescapeQALine(String s) {
+        if (s.indexOf('\\') < 0) return s;
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char next = s.charAt(i + 1);
+                if (next == '\\' || next == '=' || next == ':') {
+                    sb.append(next);
+                    i++;
+                    continue;
+                }
+            }
+            sb.append(c);
+        }
+        return sb.toString();
     }
 
     private void startTask() {

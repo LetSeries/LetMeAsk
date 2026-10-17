@@ -19,3 +19,7 @@ out/
 *.class
 *.log
 *.orig
+
+# 本地验证临时目录
+.m2repo/
+.qa/
