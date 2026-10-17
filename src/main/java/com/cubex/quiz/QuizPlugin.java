@@ -76,6 +76,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private long leaderboardBroadcastMinutes = 60L;
     private int leaderboardBroadcastCount = 10;
     private volatile boolean celebrateEnabled = true;
+    // 出题/答题广播的展示通道：chat=聊天栏（默认，原行为）/ actionbar=动作栏 / title=标题 / both=聊天栏+动作栏
+    // 动作栏与标题走数据包层直接发给客户端，不经过聊天管线，聊天类插件拦不到
+    private volatile String broadcastMode = "chat";
+    // 动作栏模式下当前题目那一行：动作栏 2~3 秒即消失，题目存活期间由 tick 每秒重发
+    private volatile String currentActionBarText = null;
     private volatile String celebrateTitle = "§6§l答对了！";
     private volatile String celebrateSubtitle = "§e+{reward} 金币";
     private volatile String celebrateSound = "ENTITY_PLAYER_LEVELUP";
@@ -319,6 +324,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         celebrateSound = baseCfg.getString("celebrate.sound", "ENTITY_PLAYER_LEVELUP");
         celebrateVolume = (float) Math.max(0.0, baseCfg.getDouble("celebrate.volume", 1.0));
         celebratePitch = (float) Math.max(0.0, baseCfg.getDouble("celebrate.pitch", 1.0));
+        // 展示通道：老服没有这个键时走默认 chat，行为与升级前完全一致
+        broadcastMode = normalizeBroadcastMode(baseCfg.getString("broadcast-mode", "chat"));
         // 物品奖励：缺失/非法时内部整体禁用，不影响金币流程
         if (itemRewards != null) itemRewards.load(baseCfg);
 
@@ -515,9 +522,64 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     }
 
     // Bukkit 传统文本 API 兼容层，Paper 与 Spigot 通用。
+    // 全服广播按 broadcast-mode 分流：动作栏/标题是数据包层直发客户端，绕开聊天管线，
+    // 用于主服被聊天类插件过滤「只有 OP 能看到题目」的场景。
     @SuppressWarnings("deprecation")
     private void broadcastLegacy(String message) {
-        Bukkit.broadcastMessage(message);
+        String mode = broadcastMode;
+        if ("actionbar".equals(mode)) {
+            broadcastActionBar(message);
+        } else if ("title".equals(mode)) {
+            broadcastTitle(message);
+        } else if ("both".equals(mode)) {
+            Bukkit.broadcastMessage(message);
+            broadcastActionBar(message);
+        } else {
+            Bukkit.broadcastMessage(message); // chat：默认，行为与升级前一致
+        }
+    }
+
+    /** 标题停留/淡入淡出（ticks）：标题不需要每秒重发，够看完一眼即可。 */
+    private static final int TITLE_FADE_IN = 10;
+    private static final int TITLE_STAY = 100;   // 5 秒
+    private static final int TITLE_FADE_OUT = 20;
+
+    /** 全服动作栏。逐玩家发送，单个玩家发送失败不影响其他人。 */
+    @SuppressWarnings("deprecation")
+    private void broadcastActionBar(String message) {
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            try {
+                p.sendActionBar(message);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** 全服标题：消息作为大标题，副标题留空。 */
+    @SuppressWarnings("deprecation")
+    private void broadcastTitle(String message) {
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            try {
+                p.sendTitle(message, "", TITLE_FADE_IN, TITLE_STAY, TITLE_FADE_OUT);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** 校验 broadcast-mode：非法值告警并回退 chat，避免一个错字导致全服看不到消息。 */
+    private String normalizeBroadcastMode(String raw) {
+        String value = raw == null ? "chat" : raw.trim().toLowerCase(Locale.ROOT);
+        switch (value) {
+            case "chat":
+            case "actionbar":
+            case "title":
+            case "both":
+                return value;
+            default:
+                getLogger().warning("broadcast-mode 配置无效（" + raw
+                        + "），已回退 chat。可选：chat / actionbar / title / both");
+                return "chat";
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -594,7 +656,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             recentChatMessages.clear();
         }
         stats.incrementAsked();
-        broadcastLegacy(messagePrefix() + msg("announce-question", " §f新题目: §f{arg}", q.question));
+        String line = messagePrefix() + msg("announce-question", " §f新题目: §f{arg}", q.question);
+        // 动作栏模式由 tick 每秒重发这一行，所以先把文本存下来
+        currentActionBarText = line;
+        broadcastLegacy(line);
     }
 
     /**
@@ -685,6 +750,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         // 题目超时：公布答案、清空连击、安排下一题
         if (currentQuestion != null) {
+            // 动作栏 2~3 秒就消失，题目存活期间每秒重发，保证玩家随时能看题
+            if ("actionbar".equals(broadcastMode) || "both".equals(broadcastMode)) {
+                String text = currentActionBarText;
+                if (text != null) broadcastActionBar(text);
+            }
             if (questionTimeoutSeconds > 0) {
                 long elapsedMillis = System.currentTimeMillis() - currentQuestion.postTime;
                 if (elapsedMillis >= questionTimeoutSeconds * 1000L) {
@@ -712,6 +782,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         verifyingPlayer = null;
         verifyStartMillis = 0L;
         verifyEpoch++;
+        currentActionBarText = null; // 题目作废后不再重发动作栏
         synchronized (recentChatMessages) {
             recentChatMessages.clear();
         }
@@ -756,7 +827,28 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (last != null && messageTime - last < cooldownMillis) return;
             wrongFeedbackLast.put(uuid, messageTime);
         }
-        sendLegacy(player, messagePrefix() + msg("announce-wrong", " §c回答错误，再想想！", null));
+        sendModeLegacy(player, messagePrefix() + msg("announce-wrong", " §c回答错误，再想想！", null));
+    }
+
+    /**
+     * 单人消息按展示通道分流：走动作栏/标题时聊天插件同样拦不到（答错提示等只发给本人的反馈）。
+     * 单人反馈一律用动作栏而非标题：答错很频繁，每次全屏闪标题太扰人。
+     */
+    @SuppressWarnings("deprecation")
+    private void sendModeLegacy(Player player, String message) {
+        String mode = broadcastMode;
+        try {
+            if ("actionbar".equals(mode) || "title".equals(mode)) {
+                player.sendActionBar(message);
+            } else if ("both".equals(mode)) {
+                player.sendMessage(message);
+                player.sendActionBar(message);
+            } else {
+                player.sendMessage(message);
+            }
+        } catch (Throwable ignored) {
+            // 展示通道发送失败不该影响答题主流程
+        }
     }
 
     @EventHandler
