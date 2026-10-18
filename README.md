@@ -1,6 +1,6 @@
 # LetMeAsk
 
-一个 Minecraft 服务器抢答活动插件，定时在聊天栏出题，玩家抢答可获得金币奖励。
+一个 Minecraft 服务器抢答活动插件，定时在聊天栏、动作栏或标题出题，玩家抢答可获得金币奖励。
 
 ## 功能特性
 
@@ -28,8 +28,8 @@
 
 ## 安装
 
-1. 下载 `LetMeAsk-2.0.0.jar`（或 CI `latest` 滚动构建）
-2. 将 JAR 文件放入服务器 `plugins/` 目录
+1. 下载 CI `latest` 滚动构建中的最新 `LetMeAsk-2.1.0-<commit-sha>.jar`
+2. 将 JAR 文件放入服务器 `plugins/` 目录（更新时先删除旧版重复 JAR，避免同名插件冲突）
 3. 重启服务器
 4. 编辑 `plugins/LetMeAsk/base.yml` 和 `questions.yml` 进行配置
 
@@ -72,10 +72,14 @@ anti-bot-threshold-seconds: 1
 # 连续答对次数阈值，达到触发人机验证（0=禁用）
 anti-bot-correct-answer-threshold: 3
 
-# 防脚本枚举：本轮题目期间最近 N 条消息中任一相邻间隔低于该秒数则直接踢出（秒数 0=禁用）
+# 防脚本枚举：窗口填满 N 条后，所有相邻间隔都低于该秒数才踢出（N=3~20；秒数 0=禁用）
 anti-bot-chat-history-count: 3
 anti-bot-chat-min-interval-seconds: 0.5
+```
 
+只有最近 `N` 条消息组成完整窗口，且**每一对相邻消息**都快于阈值，才在玩家答对时踢人；只踢刷屏玩家，不会作废本轮题目。
+
+```yaml
 # 连击统计时间窗口（秒），超时未答对则连击清零
 anti-bot-streak-window-seconds: 300
 
@@ -141,6 +145,7 @@ broadcast-mode: chat   # chat / actionbar / title / both
 
 ⚠️ 动作栏宽度有限（约 60 字符），题目很长时会被截断，这种情况建议用 `both` 或 `title`。
 `title` 模式下「答错」这类单人反馈仍走动作栏，避免每次答错都全屏闪标题。
+Spigot 不支持 Paper 的原生动作栏 API 时，`actionbar` 会告警并自动回退聊天栏；`both` 则保留聊天栏消息。
 
 ### 多语言（`language`）
 
@@ -237,11 +242,7 @@ players:
 mvn clean package
 ```
 
-或使用 Gradle（依赖 `libs/` 目录下的本地 jar，可离线构建）：
-
-```bash
-gradle build
-```
+本项目统一使用 Maven 构建；仓库里的 Gradle 脚本与 `libs/` 是历史遗留构建物，不作为维护中的构建入口。
 
 ### 版本管理
 
@@ -251,7 +252,7 @@ gradle build
 mvn clean package -Drevision=1.2.0
 ```
 
-CI 每次构建会自动追加 commit 短哈希（如 `2.0.0-a1b2c3d`），`latest` release 永远是最新构建。
+CI 每次构建会自动追加 commit 短哈希（如 `2.1.0-a1b2c3d`），`latest` release 永远是最新构建；旧构建产物会自动清理，只保留当前版本。
 
 详见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -270,7 +271,7 @@ A：出资人余额不足时自动暂停，按 `balance-retry-seconds`（默认 
 A：先看控制台有无"扣款失败/发放失败"日志。发放失败会自动退款；退款也失败会刷 severe 日志并公告"手动补账"，按日志里的出资人/玩家/金额手工处理。
 
 **Q：改了 base.yml 没生效？**
-A：改完执行 `/lma reload`。注意题库为空时 reload 整体回滚（旧配置不动），会提示"已保留旧题库与旧配置"。
+A：改完执行 `/lma reload`。注意题库为空时 reload 整体回滚（旧配置不动），会提示"已保留旧题库与旧配置"。启动时若 `questions.yml` 题库为空，插件会禁用并报错，避免误用示例题发奖。
 
 **Q：排行榜是空的还每小时广播？**
 A：不会。空榜时定时广播自动跳过，手动 `/lma top` 仍提示"暂无答题记录"。

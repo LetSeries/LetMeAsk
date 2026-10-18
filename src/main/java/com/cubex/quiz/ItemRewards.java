@@ -258,19 +258,6 @@ public class ItemRewards {
         return sb.toString();
     }
 
-    /** 展示名后备：配置规格描述（roll 前预览用，如 status 页）。 */
-    public String describeSpecs() {
-        if (!isEnabled()) return "";
-        if (randomOne) return "随机物品（" + specs.size() + " 选 1）";
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < specs.size(); i++) {
-            if (i > 0) sb.append("、");
-            ItemSpec s = specs.get(i);
-            sb.append(s.amount).append("x ").append(prettyName(s));
-        }
-        return sb.toString();
-    }
-
     /** 物品展示名：自定义名优先，否则材质可读名。 */
     private String displayNameOf(ItemStack item) {
         try {
@@ -286,15 +273,4 @@ public class ItemRewards {
         return sb.toString();
     }
 
-    private String prettyName(ItemSpec spec) {
-        if (spec.name != null) return spec.name;
-        // 材质名转可读：DIAMOND_SWORD -> Diamond Sword
-        String[] parts = spec.material.name().toLowerCase(Locale.ROOT).split("_");
-        StringBuilder sb = new StringBuilder();
-        for (String p : parts) {
-            if (sb.length() > 0) sb.append(' ');
-            if (!p.isEmpty()) sb.append(Character.toUpperCase(p.charAt(0))).append(p.substring(1));
-        }
-        return sb.toString();
-    }
 }

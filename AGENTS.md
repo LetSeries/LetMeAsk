@@ -4,7 +4,7 @@ Minecraft Paper/Spigot 抢答插件（答题发金币）。用户可见文案与
 
 ## 构建与验证
 
-- **唯一可用的构建命令：`mvn clean package`** → `target/LetMeAsk-1.1.0.jar`。需要联网（paper-api 为 papermc 仓库的 SNAPSHOT）。
+- **唯一可用的构建命令：`mvn clean package`** → `target/LetMeAsk-<revision>.jar`（当前 revision 见 `pom.xml`）。需要联网（paper-api 为 papermc 仓库的 SNAPSHOT）。
 - **不要用 `gradle build`**：系统 Gradle 是 4.4.1，而 `build.gradle` 用了 toolchain（需 6.7+），脚本求值阶段即失败；仓库也没有 `gradlew` wrapper。`build.gradle`、`settings.gradle`、`libs/`、`sources.txt` 是另一套构建的遗留物，`libs/*.jar` 是本地 paper-api 副本（pom 用不到，别改 pom 去配合它）。
 - 没有测试、没有 lint/format 配置。**编译通过就是全部本地验证手段。**
 - 版本号单一来源是 `pom.xml` 的 `<revision>`：`plugin.yml` 写 `${revision}` 由 Maven 资源过滤代入，`build.gradle` 用 `XmlParser` 读 pom，所以只改 pom（README 里手写的 jar 文件名例外）。注意 CI 会另加 `-<sha>` 短哈希后缀。

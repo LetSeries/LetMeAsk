@@ -81,6 +81,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile String broadcastMode = "chat";
     // 动作栏模式下当前题目那一行：动作栏 2~3 秒即消失，题目存活期间由 tick 每秒重发
     private volatile String currentActionBarText = null;
+    // null=未探测；true=当前服务端支持 Paper 动作栏；false=动作栏不可用并降级聊天栏
+    private volatile Boolean actionBarSupported = null;
+    private volatile boolean actionBarWarningShown = false;
     private volatile String celebrateTitle = "§6§l答对了！";
     private volatile String celebrateSubtitle = "§e+{reward} 金币";
     private volatile String celebrateSound = "ENTITY_PLAYER_LEVELUP";
@@ -93,7 +96,6 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private File baseFile;
     private File questionsFile;
     private FileConfiguration baseCfg;
-    private FileConfiguration questionsCfg;
 
     /** 供 Messages 子系统惰性读取 base.yml 配置。 */
     FileConfiguration getBaseCfg() {
@@ -227,9 +229,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
      */
     private static final int MAX_QUESTIONS = 20000;
     private static final long MAX_QUESTIONS_FILE_BYTES = 5L * 1024 * 1024;
-    /** 单题题目/答案长度上限：超长条目跳过并告警（防恶意超长文本进广播刷屏）。 */
+    /** 单题题目上限、单个候选答案上限及所有候选答案总长度上限。 */
     private static final int MAX_QUESTION_LEN = 200;
     private static final int MAX_ANSWER_LEN = 100;
+    private static final int MAX_ANSWERS_TOTAL_LEN = 500;
 
     private boolean loadConfigValues() {
         // load base and questions from their own files
@@ -266,22 +269,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             getLogger().warning("题库条目过多（" + raw.size() + "），仅加载前 " + MAX_QUESTIONS + " 条。");
             raw = raw.subList(0, MAX_QUESTIONS);
         }
-        boolean usingFallback = false;
         if (raw == null || raw.isEmpty()) {
             if (questions.isEmpty()) {
-                // 首次启动且无题库：用内置示例兜底
-                raw = Arrays.asList(
-                        "中国首都=北京",
-                        "2+2=4",
-                        "香蕉是什么颜色=黄色"
-                );
-                usingFallback = true;
-                getLogger().warning("questions.yml 中没有题目，使用内置示例题目。请在 questions.yml 中配置 questions 字段（格式：题目=答案）");
+                // 首次启动题库为空：拒绝启用，避免生产服误用内置示例题并发放真实奖励
+                getLogger().severe("questions.yml 中没有题目，插件将禁用。请配置 questions 字段（格式：题目=答案）后重启。");
             } else {
                 // reload 时新题库为空：整体回滚，不中断运行
                 getLogger().warning("questions.yml 中没有可用题目，已保留旧题库与旧配置（" + questions.size() + " 题）。请检查配置后重新 reload。");
-                return false;
             }
+            return false;
         }
 
         List<Question> parsed = parseQuestions(raw);
@@ -296,7 +292,6 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         // 题库可用：提交新配置
         baseCfg = newBase;
-        questionsCfg = newQuestions;
         messages.invalidateCache(); // base.yml 已重载，前缀缓存失效
         messages.setLanguage(baseCfg.getString("language", "zh")); // 语言开关：zh/en，其他值回退中文
 
@@ -307,7 +302,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         antiBotThresholdSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-threshold-seconds", 1.0));
         antiBotCorrectAnswerThreshold = Math.max(0, baseCfg.getInt("anti-bot-correct-answer-threshold", 3));
         antiBotStreakWindowSeconds = Math.max(0L, baseCfg.getLong("anti-bot-streak-window-seconds", 300L));
-        antiBotChatHistoryCount = Math.max(2, baseCfg.getInt("anti-bot-chat-history-count", 3));
+        antiBotChatHistoryCount = Math.min(20, Math.max(3, baseCfg.getInt("anti-bot-chat-history-count", 3)));
         antiBotChatMinIntervalSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-chat-min-interval-seconds", 0.5));
         wrongFeedbackEnabled = baseCfg.getBoolean("wrong-feedback.enabled", true);
         wrongFeedbackCooldownSeconds = Math.max(0L, baseCfg.getLong("wrong-feedback.cooldown-seconds", 5L));
@@ -334,7 +329,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         questions.clear();
         questions.addAll(parsed);
-        return !usingFallback || !questions.isEmpty();
+        return true;
     }
 
     /** 单题权重上限：防止极端配置下加权求和 int 溢出。 */
@@ -389,7 +384,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 getLogger().warning("题目过长（" + q.length() + " 字）已跳过: " + q.substring(0, 30) + "...");
                 continue;
             }
-            if (a.length() > MAX_ANSWER_LEN * 5) {
+            if (a.length() > MAX_ANSWERS_TOTAL_LEN) {
                 getLogger().warning("题目答案过长已跳过: " + q);
                 continue;
             }
@@ -400,7 +395,12 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             List<String> answers = new ArrayList<>();
             for (String alt : a.split("\\|")) {
                 String t = alt.trim();
-                if (!t.isEmpty()) answers.add(t);
+                if (t.isEmpty()) continue;
+                if (t.length() > MAX_ANSWER_LEN) {
+                    getLogger().warning("答案过长（" + t.length() + " 字）已跳过: " + q);
+                    continue;
+                }
+                answers.add(t);
             }
             if (answers.isEmpty()) {
                 seen.remove(q);
@@ -528,7 +528,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private void broadcastLegacy(String message) {
         String mode = broadcastMode;
         if ("actionbar".equals(mode)) {
-            broadcastActionBar(message);
+            if (!broadcastActionBar(message)) Bukkit.broadcastMessage(message); // 不支持时安全降级
         } else if ("title".equals(mode)) {
             broadcastTitle(message);
         } else if ("both".equals(mode)) {
@@ -544,15 +544,50 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private static final int TITLE_STAY = 100;   // 5 秒
     private static final int TITLE_FADE_OUT = 20;
 
-    /** 全服动作栏。逐玩家发送，单个玩家发送失败不影响其他人。 */
+    /**
+     * 全服动作栏。Paper 原生 API 不在 Spigot 上存在；探测失败时调用方回退聊天栏，
+     * 避免配置 actionbar 后玩家无声无息地什么都看不到。
+     */
     @SuppressWarnings("deprecation")
-    private void broadcastActionBar(String message) {
+    private boolean broadcastActionBar(String message) {
+        if (!supportsActionBar()) return false;
         for (Player p : Bukkit.getOnlinePlayers()) {
             try {
                 p.sendActionBar(message);
+            } catch (LinkageError e) {
+                actionBarSupported = false;
+                warnActionBarFallback(e);
+                return false;
             } catch (Throwable ignored) {
+                // 单个玩家的发送失败不影响其他人
             }
         }
+        return true;
+    }
+
+    private boolean supportsActionBar() {
+        Boolean cached = actionBarSupported;
+        if (cached != null) return cached;
+        boolean supported;
+        try {
+            Player.class.getMethod("sendActionBar", String.class);
+            supported = true;
+        } catch (Throwable ignored) {
+            supported = false;
+        }
+        actionBarSupported = supported;
+        if (!supported) warnActionBarFallback(null);
+        return supported;
+    }
+
+    private void warnActionBarFallback(Throwable cause) {
+        if (actionBarWarningShown) return;
+        synchronized (this) {
+            if (actionBarWarningShown) return;
+            actionBarWarningShown = true;
+        }
+        String detail = cause == null ? "本服务端没有 Paper Player#sendActionBar API" : cause.toString();
+        getLogger().warning("动作栏当前不可用（" + detail + "），broadcast-mode=actionbar 将自动回退聊天栏；both 模式将只发聊天栏。");
     }
 
     /** 全服标题：消息作为大标题，副标题留空。 */
@@ -837,17 +872,28 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     @SuppressWarnings("deprecation")
     private void sendModeLegacy(Player player, String message) {
         String mode = broadcastMode;
+        if ("actionbar".equals(mode) || "title".equals(mode)) {
+            if (!sendActionBar(player, message)) sendLegacy(player, message);
+        } else if ("both".equals(mode)) {
+            sendLegacy(player, message);
+            sendActionBar(player, message);
+        } else {
+            sendLegacy(player, message);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean sendActionBar(Player player, String message) {
+        if (!supportsActionBar()) return false;
         try {
-            if ("actionbar".equals(mode) || "title".equals(mode)) {
-                player.sendActionBar(message);
-            } else if ("both".equals(mode)) {
-                player.sendMessage(message);
-                player.sendActionBar(message);
-            } else {
-                player.sendMessage(message);
-            }
+            player.sendActionBar(message);
+            return true;
+        } catch (LinkageError e) {
+            actionBarSupported = false;
+            warnActionBarFallback(e);
+            return false;
         } catch (Throwable ignored) {
-            // 展示通道发送失败不该影响答题主流程
+            return false;
         }
     }
 
@@ -877,16 +923,18 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             while (history.timestamps.size() > antiBotChatHistoryCount) {
                 history.timestamps.removeFirst();
             }
-            if (!correctAnswer || antiBotChatMinIntervalSeconds <= 0.0 || history.timestamps.size() < 2) {
+            // 必须先填满窗口，且所有相邻间隔都过短才判刷屏；避免两条快速纠正答案误踢。
+            if (!correctAnswer || antiBotChatMinIntervalSeconds <= 0.0
+                    || history.timestamps.size() < antiBotChatHistoryCount) {
                 return false;
             }
             long minimumIntervalMillis = (long) (antiBotChatMinIntervalSeconds * 1000.0);
             Long previous = null;
             for (Long timestamp : history.timestamps) {
-                if (previous != null && timestamp - previous < minimumIntervalMillis) return true;
+                if (previous != null && timestamp - previous >= minimumIntervalMillis) return false;
                 previous = timestamp;
             }
-            return false;
+            return true;
         }
     }
 
@@ -905,7 +953,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
         if (chatTooFast) {
             resetStreak(player.getUniqueId());
-            clearQuestionState();
+            // 只踢刷屏者，不作废整题；否则单个脚本玩家可以通过触发反作弊破坏全服本轮活动。
             broadcastLegacy(messagePrefix() + msg("announce-chat-kick", " §c玩家 §f{arg} §c因聊天消息间隔过短被踢出服务器。", player.getName()));
             kickLegacy(player, msg("kick-chat-too-fast", "聊天消息间隔过短", null));
             return;
@@ -1041,17 +1089,40 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         }
         if (celebrateSound == null || celebrateSound.isEmpty() || "none".equalsIgnoreCase(celebrateSound)) return;
         try {
-            org.bukkit.Sound sound = org.bukkit.Sound.valueOf(celebrateSound.toUpperCase(Locale.ROOT));
+            org.bukkit.Sound sound = resolveSound(celebrateSound);
+            if (sound == null) {
+                getLogger().warning("celebrate.sound 配置无效或服务端不支持: " + celebrateSound + "，已跳过音效");
+                celebrateSound = "none";
+                return;
+            }
             for (Player p : Bukkit.getOnlinePlayers()) {
                 try {
                     // 走 MASTER 通道：不受玩家环境音量设置影响，保证庆祝音效可听
                     p.playSound(p.getLocation(), sound, org.bukkit.SoundCategory.MASTER, celebrateVolume, celebratePitch);
+                } catch (LinkageError e) {
+                    throw e; // 新旧 Bukkit API 链接失败交给外层关闭音效并告警
                 } catch (Throwable ignored) {}
             }
-        } catch (IllegalArgumentException e) {
-            getLogger().warning("celebrate.sound 配置无效: " + celebrateSound + "，已跳过音效");
-            celebrateSound = "none"; // 避免每题刷一次告警
+        } catch (Throwable t) {
+            // 新版 Bukkit 将 Sound 从 enum 调整为接口；不兼容时只关闭音效，绝不打断发奖流程
+            getLogger().warning("celebrate.sound 当前服务端不兼容: " + t.getClass().getSimpleName()
+                    + "，已跳过音效");
+            celebrateSound = "none";
         }
+    }
+
+    /**
+     * 兼容 enum 与新版接口常量：两者都暴露同名 public static 字段。
+     * 不直接链接旧版 enum 的 valueOf，避免新版服务端在链接阶段抛 NoSuchMethodError。
+     */
+    private org.bukkit.Sound resolveSound(String configuredName) {
+        String name = configuredName.trim().toUpperCase(Locale.ROOT);
+        try {
+            Object value = org.bukkit.Sound.class.getField(name).get(null);
+            if (value instanceof org.bukkit.Sound) return (org.bukkit.Sound) value;
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     /**
@@ -1378,8 +1449,13 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             if (name == null || name.isEmpty()) {
                 return (sender instanceof Player) ? (Player) sender : null;
             }
-            // 先走缓存（在线/近期离线玩家命中，不碰磁盘）；未命中再走 getOfflinePlayer
-            OfflinePlayer off = Bukkit.getOfflinePlayerIfCached(name);
+            // 先走 Paper 缓存；Spigot 没有该方法时降级到通用 getOfflinePlayer
+            OfflinePlayer off;
+            try {
+                off = Bukkit.getOfflinePlayerIfCached(name);
+            } catch (LinkageError ignored) {
+                off = null;
+            }
             if (off == null) off = Bukkit.getOfflinePlayer(name);
             // getOfflinePlayer(name) 对从未进服的名字也会返回占位对象，用是否玩过来过滤
             if (!off.hasPlayedBefore() && !off.isOnline()) return null;

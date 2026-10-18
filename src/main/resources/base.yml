@@ -7,8 +7,8 @@
 # reward: 每题奖励金额
 # question-interval-seconds: 自动出题间隔（秒）
 # anti-bot-threshold-seconds: 回答速度（秒）小于等于该值会触发人机验证
-# anti-bot-chat-history-count: 答对时检查最近多少条聊天消息（至少 2 条）
-# anti-bot-chat-min-interval-seconds: 最近消息中任一相邻间隔低于该秒数则踢出；0=禁用
+# anti-bot-chat-history-count: 答对时检查最近多少条聊天消息（范围 3~20，窗口填满后才判定）
+# anti-bot-chat-min-interval-seconds: 最近完整窗口中所有相邻间隔都低于该秒数才踢出；0=禁用
 # fuzzy-similarity-threshold: 0-1，答案相似度阈值，越高越严格
 # question-timeout-seconds: 答题超时时间（秒），超时后公布答案并出下一题；设置为 0 禁用
 
@@ -21,7 +21,7 @@ question-interval-seconds: 60
 question-timeout-seconds: 30
 # 回答用时（秒，支持小数）小于等于该值会触发人机验证
 anti-bot-threshold-seconds: 1
-# 答对时检查本轮题目期间最近 3 条消息的间隔；低于 0.5 秒踢出
+# 答对时检查本轮题目期间最近 3 条消息（窗口未填满不触发；全部相邻间隔都低于 0.5 秒才踢出）
 anti-bot-chat-history-count: 3
 anti-bot-chat-min-interval-seconds: 0.5
 # 答错反馈：只提示本人，冷却秒内不重复提示；enabled 设 false 关闭

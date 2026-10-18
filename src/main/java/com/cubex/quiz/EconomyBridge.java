@@ -24,7 +24,6 @@ public class EconomyBridge {
     private final Map<String, Method> economyMethods = new java.util.concurrent.ConcurrentHashMap<>();
     private final Set<String> missingMethods = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    private boolean available = false;
     private String providerName = null;
     private boolean bankSupport = true;
 
@@ -54,7 +53,6 @@ public class EconomyBridge {
             this.missingMethods.clear();
             this.providerName = readEconomyName();
             this.bankSupport = readEconomyBankSupport();
-            this.available = true;
             return true;
         } catch (ClassNotFoundException cnf) {
             logger.warning("Vault API 不在类路径中，无法加载 Economy 接口");
@@ -63,10 +61,6 @@ public class EconomyBridge {
             logger.log(java.util.logging.Level.SEVERE, "加载经济提供者时出错", t);
             return false;
         }
-    }
-
-    public boolean isAvailable() {
-        return available;
     }
 
     public String getProviderName() {
@@ -180,10 +174,6 @@ public class EconomyBridge {
     private static double saneBalance(double v) {
         if (Double.isNaN(v) || Double.isInfinite(v) || v < 0.0) return 0.0;
         return v;
-    }
-
-    public double getPayerBalance() {
-        return getBalanceOf(payerDisplay);
     }
 
     public Object withdrawFrom(String who, double amount) {

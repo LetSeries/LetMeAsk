@@ -75,15 +75,52 @@ public class Messages {
 
     public String msg3(String key, String def, String cmd, String arg, String arg2) {
         FileConfiguration cfg = configSupplier.get();
-        String s = cfg == null ? def : lookup(cfg, key, def);
-        if (cmd != null) {
-            s = s.replace("{cmd}", cmd);
-        } else if (arg != null) {
-            // 兼容旧版 status-total 默认值（曾借用 {cmd} 传累计出题数）：cmd 为空时用 arg 回填
-            s = s.replace("{cmd}", arg);
+        String template = cfg == null ? def : lookup(cfg, key, def);
+        // 兼容旧版 status-total 默认值（曾借用 {cmd} 传累计出题数）：cmd 为空时用 arg 回填
+        return fillPlaceholders(template, cmd != null ? cmd : arg, arg, arg2);
+    }
+
+    /**
+     * 单次扫描替换占位符，并把<b>模板</b>里的 & 转成 §。
+     *
+     * <p>为什么不用 String.replace 串联：那样颜色转换与占位符替换都会作用在「模板+已插入文本」上，
+     * 有两个真实缺陷：
+     * <ul>
+     *   <li>题目/答案里含 & 会被当颜色码吃掉（"A & B 哪个大" → "A § B 哪个大"）；</li>
+     *   <li>插入文本里若含 {arg2} 之类占位符会被二次替换。</li>
+     * </ul>
+     * 单次扫描天然避免这两点：插入的内容只被写入、不再被扫描。
+     */
+    static String fillPlaceholders(String template, String cmd, String arg, String arg2) {
+        StringBuilder sb = new StringBuilder(template.length() + 32);
+        int i = 0;
+        while (i < template.length()) {
+            char c = template.charAt(i);
+            if (c == '&') {
+                sb.append('§');
+                i++;
+                continue;
+            }
+            if (c == '{') {
+                if (cmd != null && template.startsWith("{cmd}", i)) {
+                    sb.append(cmd);
+                    i += 5;
+                    continue;
+                }
+                if (arg2 != null && template.startsWith("{arg2}", i)) {
+                    sb.append(arg2);
+                    i += 6;
+                    continue;
+                }
+                if (arg != null && template.startsWith("{arg}", i)) {
+                    sb.append(arg);
+                    i += 5;
+                    continue;
+                }
+            }
+            sb.append(c);
+            i++;
         }
-        if (arg != null) s = s.replace("{arg}", arg);
-        if (arg2 != null) s = s.replace("{arg2}", arg2);
-        return s.replace('&', '§');
+        return sb.toString();
     }
 }

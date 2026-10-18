@@ -50,3 +50,15 @@ jobs:
             时间: ${{ github.event.head_commit.timestamp }}
           files: target/*.jar
           prerelease: true
+
+      - name: Prune old rolling-release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          keep="LetMeAsk-${{ steps.version.outputs.revision }}.jar"
+          assets=$(gh release view latest --json assets --jq '.assets[].name' || true)
+          while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            [ "$name" = "$keep" ] && continue
+            gh release delete-asset latest "$name" --yes || echo "Could not delete old asset: $name"
+          done <<< "$assets"
