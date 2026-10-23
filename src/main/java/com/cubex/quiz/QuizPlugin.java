@@ -1537,10 +1537,6 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         volatile long postTime;
         volatile java.util.UUID id;
 
-        Question(String q, List<String> as) {
-            this(q, as, 1);
-        }
-
         Question(String q, List<String> as, int w) {
             this.question = q;
             this.answers = Collections.unmodifiableList(new ArrayList<>(as));
