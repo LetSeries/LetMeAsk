@@ -1141,6 +1141,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         return msg("announce-win-items", "，另获 {arg}", desc);
     }
 
+    // 发奖转账串行锁：经济后端可能带磁盘/网络 IO（数据库类经济插件），转账放异步线程执行，
+    // 两笔奖金的“余额检查→扣款→到账”用它串行化，防止交错扣款。answerLock 只负责答题判定，不等待 IO。
+    private final Object awardLock = new Object();
+
     private void awardWinner(Player winner) {
         // 无 Vault 时降级为纯公告模式，不暂停出题
         if (!economyAvailable) {
@@ -1163,29 +1167,47 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             celebrate(winner, 0.0);
             return;
         }
-        // 检查出资人余额
+        // 经济转账切异步执行（见 awardLock 注释），结果回主线程落地广播/庆祝/统计；
+        // 调度器保证主线程此前对出资人/经济配置的写入对异步任务可见。
+        // 已知代价：插件恰好在这个窗口关闭时，挂起的异步转账会被取消，该次奖励丢失。
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            AwardOutcome outcome;
+            synchronized (awardLock) {
+                outcome = transferReward(winner);
+            }
+            Bukkit.getScheduler().runTask(this, () -> finishAward(winner, outcome));
+        });
+    }
+
+    /** 转账结果类型：由异步线程判定，带回主线程选择广播。 */
+    private enum AwardKind {
+        /** 出资人余额不足，暂停出题。 */
+        PAUSED_NO_FUNDS,
+        /** 扣款失败，暂停出题。 */
+        WITHDRAW_FAILED,
+        /** 发放失败但已成功退款。 */
+        REFUNDED,
+        /** 发放失败且退款失败，需人工补账。 */
+        REFUND_FAILED,
+        /** 转账完成。 */
+        SUCCESS
+    }
+
+    /** 一次转账的结果快照：由异步线程产出，主线程只按结果广播。 */
+    private record AwardOutcome(AwardKind kind, String error, String refundError, double payerBalance) {}
+
+    /** 出资人扣款 → 玩家到账 → 失败退款的转账主体。须持 awardLock 调用；暂停标记在判定处直接落位。 */
+    private AwardOutcome transferReward(Player winner) {
         double payerBal = getBalanceOf(payerDisplay());
         if (payerBal < rewardAmount) {
-            paused = true;
-            // 进入暂停即定好下次复查时间，避免 tick 第一秒就重复查询
-            nextBalanceCheckMillis = System.currentTimeMillis() + balanceRetrySeconds * 1000L;
-            broadcastLegacy(messagePrefix() + msg3("announce-paused-funds",
-                    " §c出题已暂停：资金不足（需要 {arg}，当前 {arg2}）。", null,
-                    String.format(Locale.ROOT, "%,.2f", rewardAmount),
-                    String.format(Locale.ROOT, "%,.2f", payerBal)));
-            return;
+            pauseAward();
+            return new AwardOutcome(AwardKind.PAUSED_NO_FUNDS, null, null, payerBal);
         }
-
         Object w = withdrawFrom(payerDisplay(), rewardAmount);
         if (!isEconomyResponseSuccess(w)) {
-            paused = true;
-            nextBalanceCheckMillis = System.currentTimeMillis() + balanceRetrySeconds * 1000L;
-            String err = getEconomyResponseError(w);
-            broadcastLegacy(messagePrefix() + msg("announce-transfer-failed", " §c转账失败（错误: {arg}），出题已暂停。请检查服务器日志。", err));
-            getLogger().warning("扣款失败: " + err);
-            return;
+            pauseAward();
+            return new AwardOutcome(AwardKind.WITHDRAW_FAILED, getEconomyResponseError(w), null, payerBal);
         }
-
         Object d = depositTo(winner, rewardAmount);
         if (!isEconomyResponseSuccess(d)) {
             // refund payer if possible（必须走对称通道，否则 Server/UUID 出资时钱退错地方）
@@ -1193,23 +1215,50 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             getLogger().warning("发放给胜利玩家失败: " + err + "。尝试退款。");
             Object refund = refundToPayer(rewardAmount);
             if (isEconomyResponseSuccess(refund)) {
-                broadcastLegacy(messagePrefix() + msg("announce-refunded", " §c发放奖励失败，已退款，请联系管理员。错误: {arg}", err));
-            } else {
-                // 退款也失败：出资人已被扣款，玩家未到账，必须人工介入，不能谎称已退款
+                return new AwardOutcome(AwardKind.REFUNDED, err, null, payerBal);
+            }
+            return new AwardOutcome(AwardKind.REFUND_FAILED, err, getEconomyResponseError(refund), payerBal);
+        }
+        return new AwardOutcome(AwardKind.SUCCESS, null, null, payerBal);
+    }
+
+    /** 转账失败即暂停出题，并在判定当下定好复查时间（volatile 字段，异步写主线程读安全）。 */
+    private void pauseAward() {
+        paused = true;
+        nextBalanceCheckMillis = System.currentTimeMillis() + balanceRetrySeconds * 1000L;
+    }
+
+    /** 转账结果落地（主线程）：广播 + 成功时的统计/物品/庆祝。 */
+    private void finishAward(Player winner, AwardOutcome o) {
+        switch (o.kind()) {
+            case PAUSED_NO_FUNDS -> broadcastLegacy(messagePrefix() + msg3("announce-paused-funds",
+                    " §c出题已暂停：资金不足（需要 {arg}，当前 {arg2}）。", null,
+                    String.format(Locale.ROOT, "%,.2f", rewardAmount),
+                    String.format(Locale.ROOT, "%,.2f", o.payerBalance())));
+            case WITHDRAW_FAILED -> {
+                broadcastLegacy(messagePrefix() + msg("announce-transfer-failed", " §c转账失败（错误: {arg}），出题已暂停。请检查服务器日志。", o.error()));
+                getLogger().warning("扣款失败: " + o.error());
+            }
+            case REFUNDED -> broadcastLegacy(messagePrefix() + msg("announce-refunded", " §c发放奖励失败，已退款，请联系管理员。错误: {arg}", o.error()));
+            case REFUND_FAILED -> {
+                // 退款失败：出资人已被扣款，玩家未到账，必须人工介入，不能谎称已退款
                 // 日志脱敏：玩家名只留 UUID 前 8 位用于对账，不记全名；金额保留（补账必需）
                 String uuidShort = winner.getUniqueId().toString().substring(0, 8);
                 getLogger().severe("退款失败！出资人 " + payerDisplay() + " 已被扣 " + rewardAmount
-                        + "，玩家[" + uuidShort + "]未到账。请手动补账。发放错误: " + err
-                        + "，退款错误: " + getEconomyResponseError(refund));
-                broadcastLegacy(messagePrefix() + msg("announce-refund-failed", " §c发放奖励失败，且自动退款失败！请联系管理员手动补账。错误: {arg}", err));
+                        + "，玩家[" + uuidShort + "]未到账。请手动补账。发放错误: " + o.error()
+                        + "，退款错误: " + o.refundError());
+                broadcastLegacy(messagePrefix() + msg("announce-refund-failed", " §c发放奖励失败，且自动退款失败！请联系管理员手动补账。错误: {arg}", o.error()));
             }
-            return;
+            case SUCCESS -> {
+                recordCorrect(winner, rewardAmount);
+                // 异步转账期间玩家可能已退服：广播照发，背包/Title 类操作只对在线玩家做
+                boolean online = winner.isOnline();
+                String items = online ? giveItems(winner) : "";
+                broadcastLegacy(messagePrefix() + msg3("announce-win-reward", " §a玩家 §f{arg} §a答对了问题，获得 §e{arg2} §a货币！",
+                        null, winner.getName(), String.format(Locale.ROOT, "%,.2f", rewardAmount)) + items);
+                if (online) celebrate(winner, rewardAmount);
+            }
         }
-
-        recordCorrect(winner, rewardAmount);
-        broadcastLegacy(messagePrefix() + msg3("announce-win-reward", " §a玩家 §f{arg} §a答对了问题，获得 §e{arg2} §a货币！",
-                null, winner.getName(), String.format(Locale.ROOT, "%,.2f", rewardAmount)) + giveItems(winner));
-        celebrate(winner, rewardAmount);
     }
 
     // 经济初始化转发到 EconomyBridge（渐进迁移：调用方不动，行为零变化）
