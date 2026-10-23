@@ -16,6 +16,8 @@ import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bstats.bukkit.Metrics;
+import org.bstats.charts.SimplePie;
 
 import java.io.File;
 import java.lang.reflect.Method;
@@ -91,6 +93,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile float celebratePitch = 1.0f;
 
     // 出资人解析已搬进 EconomyBridge（resolvePayer/isPayer/getPayerDisplay）
+
+    // bStats 插件 id：在 https://bstats.org/what-is-my-plugin-id 注册后填入；<=0 时不初始化统计。
+    // bStats 类由 shade relocate 到 com.cubex.quiz.libs.bstats（见 pom），不会与其他插件的 bStats 冲突。
+    private static final int BSTATS_PLUGIN_ID = 0; // TODO: 注册后替换为真实 id
 
     // 配置文件
     private File baseFile;
@@ -170,6 +176,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 saveStats(++runs % 10 != 0);
             }
         }.runTaskTimerAsynchronously(this, 600L, 600L);
+
+        // bStats 匿名统计：id 未注册（<=0）时跳过，不影响插件运行
+        if (BSTATS_PLUGIN_ID > 0) {
+            Metrics metrics = new Metrics(this, BSTATS_PLUGIN_ID);
+            // 自定义图表的 chart id 同样要在 bStats 后台注册后才会展示
+            metrics.addCustomChart(new SimplePie("broadcast_mode", () -> broadcastMode));
+            metrics.addCustomChart(new SimplePie("language", () -> messages.getLanguage()));
+        }
 
         getLogger().info("QuizPlugin enabled");
     }

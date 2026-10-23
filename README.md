@@ -13,6 +13,7 @@
 - **答对特效**：答对者收到 Title 标题，全服播放升级音效（均可在 `celebrate` 下配置开关）
 - **物品奖励**：与金币叠加发放，支持自定义名/lore/附魔，可随机其一，背包满掉地上（`items` 配置）
 - **多语言**：`language: zh/en` 一键切换，英文段缺键自动回退中文
+- **匿名统计**：通过 bStats 收集匿名使用数据（类已 relocate 进插件自身包；插件 id 未注册前不上报，全局可在 `plugins/bStats/config.json` 关闭）
 - **灵活配置**：支持玩家名、UUID、服务器账户、LittleSkin 等支付方式
 
 注意: 人机验证需要依赖[HumanVerify](https://github.com/FZAoao/HumanVerify)插件。如果没有它，人机验证功能将无法使用，但是基本功能不会影响。

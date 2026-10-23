@@ -48,7 +48,8 @@ jobs:
             Commit: ${{ github.sha }}
             分支: ${{ github.ref_name }}
             时间: ${{ github.event.head_commit.timestamp }}
-          files: target/*.jar
+          # shade 会在 target/ 留 original-*.jar 备份，只上传正式产物，避免同名插件冲突
+          files: target/LetMeAsk-*.jar
           prerelease: true
 
       - name: Prune old rolling-release assets
