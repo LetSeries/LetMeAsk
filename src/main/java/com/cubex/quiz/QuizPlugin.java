@@ -416,7 +416,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
      * 题目或答案本身含 = / : 时写成 \= / \:，解析后还原成字面量（\\ 还原成单个反斜杠）。
      * 无分隔符返回 null。
      */
-    private static String[] splitQALine(String line) {
+    /** 包级私有以便单测直接覆盖。 */
+    static String[] splitQALine(String line) {
         int sepIndex = findUnescapedSeparator(line, '=');
         if (sepIndex < 0) sepIndex = findUnescapedSeparator(line, ':');
         if (sepIndex < 0) return null;
