@@ -103,7 +103,14 @@ public class ItemRewards {
             }
             spec.amount = clamped;
             Object nameObj = map.get("name");
-            if (nameObj != null) spec.name = nameObj.toString().replace('&', '§');
+            if (nameObj != null) {
+                String name = nameObj.toString();
+                if (name.length() > 50) {
+                    logger.warning("物品 " + material + " 自定义名超长已截断。");
+                    name = name.substring(0, 50);
+                }
+                spec.name = name.replace('&', '§');
+            }
             Object loreObj = map.get("lore");
             if (loreObj instanceof List) {
                 List<?> rawLore = (List<?>) loreObj;
@@ -122,11 +129,6 @@ public class ItemRewards {
                     lore.add(text.replace('&', '§'));
                 }
                 if (!lore.isEmpty()) spec.lore = lore;
-            }
-            Object nameCheck = map.get("name");
-            if (nameCheck != null && nameCheck.toString().length() > 50) {
-                logger.warning("物品 " + material + " 自定义名超长已截断。");
-                spec.name = nameCheck.toString().substring(0, 50).replace('&', '§');
             }
             Object enchObj = map.get("enchantments");
             if (enchObj instanceof Map) {
