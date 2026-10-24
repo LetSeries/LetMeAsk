@@ -77,6 +77,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private final Map<java.util.UUID, Long> wrongFeedbackLast = new HashMap<>();
     private long verifyTimeoutSeconds;
     private volatile long balanceRetrySeconds = 30L; // 暂停后每隔多少秒复查一次出资人余额（异步发奖线程也会读）
+    private volatile boolean balanceCheckInFlight = false; // 暂停态余额复查已在异步执行，避免重复查询
     private volatile long nextBalanceCheckMillis = 0L;
     // 人机验证桥接已搬进 HumanVerifyBridge（反射调用+降级+一次性告警+结果判定）
     private boolean leaderboardBroadcastEnabled = true;
@@ -802,23 +803,39 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             // 降级模式：无 Vault 时不暂停出题逻辑，但 awardWinner 只发公告
             if (paused) paused = false;
         } else if (paused) {
-            // 暂停中：节流复查余额（默认 30 秒一次），避免每秒打一次 Vault 后端
+            // 暂停中：节流复查余额（默认 30 秒一次），避免每秒打一次 Vault 后端。
+            // 余额查询可能走数据库/网络，放异步执行，结果回主线程再决定是否恢复出题。
             long nowMs = System.currentTimeMillis();
-            if (nowMs < nextBalanceCheckMillis) return;
+            if (nowMs < nextBalanceCheckMillis || balanceCheckInFlight) return;
             nextBalanceCheckMillis = nowMs + balanceRetrySeconds * 1000L;
-            double bal = getBalanceOf(payerDisplay());
-            // 恢复阈值加 1 美分滞后：余额恰好等于奖励时恢复后下一题又暂停，来回横跳刷屏
-            if (bal >= rewardAmount + 0.01) {
-                paused = false;
-                String countText = rewardAmount > 0.0
-                        ? String.format(Locale.ROOT, "%,d", (long) (bal / rewardAmount))
-                        : "";
-                broadcastLegacy(messagePrefix() + msg3("announce-funded",
-                        " §a资金已足额，恢复出题。当前余额: {arg}，预计还可以奖励{arg2}次。",
-                        null, String.format(Locale.ROOT, "%,.2f", bal), countText));
-            } else {
-                return;
-            }
+            balanceCheckInFlight = true;
+            final String payerSnap = payerDisplay();
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                final double bal;
+                try {
+                    bal = getBalanceOf(payerSnap);
+                } catch (Throwable t) {
+                    getLogger().log(Level.WARNING, "复查出资人余额失败", t);
+                    Bukkit.getScheduler().runTask(this, () -> balanceCheckInFlight = false);
+                    return;
+                }
+                Bukkit.getScheduler().runTask(this, () -> {
+                    balanceCheckInFlight = false;
+                    // 期间可能已被 reload/停止或其他路径恢复，重新确认暂停态
+                    if (!paused) return;
+                    // 恢复阈值加 1 美分滞后：余额恰好等于奖励时恢复后下一题又暂停，来回横跳刷屏
+                    if (bal >= rewardAmount + 0.01) {
+                        paused = false;
+                        String countText = rewardAmount > 0.0
+                                ? String.format(Locale.ROOT, "%,d", (long) (bal / rewardAmount))
+                                : "";
+                        broadcastLegacy(messagePrefix() + msg3("announce-funded",
+                                " §a资金已足额，恢复出题。当前余额: {arg}，预计还可以奖励{arg2}次。",
+                                null, String.format(Locale.ROOT, "%,.2f", bal), countText));
+                    }
+                });
+            });
+            return;
         }
 
         // 验证超时兜底：回调永不返回时解锁，避免永久锁死
