@@ -19,10 +19,15 @@
         <repository>
             <id>papermc</id>
             <url>https://repo.papermc.io/repository/maven-public/</url>
+            <!-- 校验和不匹配时直接失败，避免被篡改/损坏的构件进入构建 -->
+            <releases><checksumPolicy>fail</checksumPolicy></releases>
+            <snapshots><checksumPolicy>fail</checksumPolicy></snapshots>
         </repository>
         <repository>
             <id>central</id>
             <url>https://repo1.maven.org/maven2</url>
+            <releases><checksumPolicy>fail</checksumPolicy></releases>
+            <snapshots><checksumPolicy>fail</checksumPolicy></snapshots>
         </repository>
     </repositories>
 
