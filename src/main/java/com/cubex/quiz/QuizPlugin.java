@@ -1522,6 +1522,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(msg3("status-total", " 累计出题: §f{arg} §7已答对: §f{arg2}",
                     null, String.valueOf(stats.getTotalAsked()), String.valueOf(stats.getTotalAnswered())));
             if (economyAvailable) {
+                // 出资人账户名与余额属于运维信息，仅管理员可见（status 默认全员可执行）
+                if (!sender.hasPermission("letmeask.admin")) {
+                    sender.sendMessage(" 经济系统: §a已启用");
+                    return;
+                }
                 // 余额查询可能打 Vault 后端 IO，异步查完再回主线程输出，避免卡主线程
                 final String payerNameSnap = payerDisplay();
                 final String providerSnap = economyProviderName();
@@ -1574,6 +1579,14 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                 else sender.sendMessage(msg("player-not-found", "&c找不到玩家: {arg}", nameArg));
                 return;
             }
+            // 查自己始终允许；查他人需要 letmeask.stats.others（默认 true，可由权限插件收紧）
+            if (sender instanceof Player
+                    && !((Player) sender).getUniqueId().equals(target.getUniqueId())
+                    && !sender.hasPermission("letmeask.stats.others")) {
+                sender.sendMessage(msg("stats-no-permission",
+                        "&c你没有权限查看其他玩家的统计 (letmeask.stats.others)", null));
+                return;
+            }
             String key = target.getUniqueId().toString();
             cacheName(key, target.getName()); // 顺手更新缓存（加锁，与异步保存互斥）
             String display = displayNameOf(key);
@@ -1619,6 +1632,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             }
 
             if (args.length == 2 && args[0].equalsIgnoreCase("stats")) {
+                // 补全同样按权限过滤，避免向无权者枚举在线玩家名
+                if (!sender.hasPermission("letmeask.stats.others")) return Collections.emptyList();
                 String prefix = args[1].toLowerCase(Locale.ROOT);
                 List<String> names = new ArrayList<>();
                 for (Player p : Bukkit.getOnlinePlayers()) {

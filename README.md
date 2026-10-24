@@ -40,8 +40,8 @@
 |------|------|------|
 | `/letmeask` 或 `/letmeask help`（简写 `/lma`） | 全员 | 帮助菜单（管理员额外显示管理命令） |
 | `/letmeask top [数量]` | 全员 | 答题排行榜（默认前 10，最多 20） |
-| `/letmeask stats [玩家名]` | 全员 | 查看答题统计（默认查自己） |
-| `/letmeask status` | 全员 | 查看插件状态 |
+| `/letmeask stats [玩家名]` | 全员（查他人需 `letmeask.stats.others`，默认 true） | 查看答题统计（默认查自己） |
+| `/letmeask status` | 全员（出资人账户与余额仅 `letmeask.admin` 可见） | 查看插件状态 |
 | `/letmeask start` | letmeask.admin | 启动定时出题 |
 | `/letmeask stop` | letmeask.admin | 停止定时出题（同时作废当前题目并解锁验证） |
 | `/letmeask question [force]` | letmeask.admin | 手动发布新题目 |

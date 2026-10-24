@@ -22,6 +22,11 @@ permissions:
   letmeask.use:
     description: "使用 LetMeAsk 查询命令（top/stats/status）"
     default: true
+  letmeask.stats.others:
+    description: "查看其他玩家的答题统计（不含他人查询时始终可查自己）"
+    default: true
   letmeask.admin:
     description: "管理 LetMeAsk 插件"
     default: op
+
+permission-message: "&c你没有权限使用该命令。"

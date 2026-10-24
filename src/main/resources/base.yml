@@ -88,6 +88,7 @@ messages:
   common-none: "无"
   console-need-name: "&c控制台请指定玩家名：/letmeask stats <玩家名>"
   player-not-found: "&c找不到玩家: {arg}"
+  stats-no-permission: "&c你没有权限查看其他玩家的统计 (letmeask.stats.others)"
   invalid-count: "&c数量参数无效，使用默认值 10"
   no-records: "&e暂无答题记录"
   # 以下为管理命令反馈与踢人原因（支持 & 颜色码，{arg} 为参数占位）
@@ -154,6 +155,7 @@ messages-en:
   common-none: "None"
   console-need-name: "&cConsole must specify a player: /letmeask stats <player>"
   player-not-found: "&cPlayer not found: {arg}"
+  stats-no-permission: "&cYou lack permission to view other players' stats (letmeask.stats.others)"
   invalid-count: "&cInvalid count, using default 10"
   no-records: "&eNo records yet"
   unknown-command: "&cUnknown subcommand: {arg}"
