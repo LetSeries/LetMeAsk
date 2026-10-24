@@ -6,7 +6,7 @@ Minecraft Paper/Spigot 抢答插件（答题发金币）。用户可见文案与
 
 - **唯一可用的构建命令：`mvn clean package`** → `target/LetMeAsk-<revision>.jar`（当前 revision 见 `pom.xml`）。需要联网（paper-api 为 papermc 仓库的 SNAPSHOT）。
 - **唯一构建入口是 Maven**：`mvn clean package`。遗留的 Gradle 脚本、`libs/` 本地 jar 与 `sources.txt` 已移除，不要再引入第二套构建。
-- 没有测试、没有 lint/format 配置。**编译通过就是全部本地验证手段。**
+- 有少量 JUnit 单测（`src/test/java`，`mvn package` 会自动执行）；没有 lint/format 配置，**编译与单测通过是全部本地验证手段**。
 - 版本号单一来源是 `pom.xml` 的 `<revision>`：`plugin.yml` 写 `${revision}` 由 Maven 资源过滤代入，所以只改 pom（README 里手写的 jar 文件名例外）。注意 CI 会另加 `-<sha>` 短哈希后缀。
 - **推 `main` 会触发 `.github/workflows/build-release.yml`**：push 即 CI 构建并覆盖发布到 `latest` 这个滚动 release（预发布）。推之前先本地 `mvn clean package` 过一遍。
 - `.github/modernize/` 只是两个 hook 脚本，不是 CI。

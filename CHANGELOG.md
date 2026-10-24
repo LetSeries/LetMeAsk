@@ -1,5 +1,17 @@
 # 更新日志
 
+## 未发布
+
+### 安全加固
+
+- 人机验证不可用时默认拒绝发奖（`anti-bot-verify-unavailable: deny`），避免脚本绕过验证刷奖励；设为 `award` 可恢复旧行为
+- 所有数值配置过滤 NaN/Infinity 并做区间钳制，防止 `.nan`/`.inf` 污染 Vault 余额、造成 long 溢出或静默关闭反作弊
+- `/letmeask status` 的出资人账户与余额仅对 `letmeask.admin` 展示；新增 `letmeask.stats.others` 权限用于收紧跨玩家统计查询
+- `base.yml` / `stats.yml` 增加体积熔断；物品奖励附魔等级钳制为 1~255
+- 修复出资人状态跨线程撕裂读、答题回调读取可变题目 id、暂停态余额复查阻塞主线程、聊天频率统计全局锁竞争
+- CI：Actions 固定到 commit SHA、版本号字符集校验、Maven `checksumPolicy=fail`、新增 Dependabot；移除遗留 Gradle 构建与无来源本地 jar
+- 新增 `SECURITY.md` 漏洞披露说明
+
 ## 2.1.0
 
 ### 功能与修复
