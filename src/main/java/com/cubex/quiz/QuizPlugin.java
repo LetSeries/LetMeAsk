@@ -249,6 +249,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
      */
     private static final int MAX_QUESTIONS = 20000;
     private static final long MAX_QUESTIONS_FILE_BYTES = 5L * 1024 * 1024;
+    /** base.yml 体积上限：主线程同步解析，超大文件会卡启动/占内存（正常配置仅几十 KB）。 */
+    private static final long MAX_BASE_FILE_BYTES = 1L * 1024 * 1024;
     /** 单题题目上限、单个候选答案上限及所有候选答案总长度上限。 */
     private static final int MAX_QUESTION_LEN = 200;
     private static final int MAX_ANSWER_LEN = 100;
@@ -287,10 +289,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         FileConfiguration newBase;
         FileConfiguration newQuestions;
         try {
-            // 文件级熔断：超大 questions.yml 直接拒载，避免 SnakeYAML 解析卡死主线程
+            // 文件级熔断：超大 questions.yml / base.yml 直接拒载，避免 SnakeYAML 解析卡死主线程
             if (questionsFile.exists() && questionsFile.length() > MAX_QUESTIONS_FILE_BYTES) {
                 getLogger().severe("questions.yml 过大（" + (questionsFile.length() / 1024 / 1024)
                         + "MB，上限 5MB），已保留旧题库与旧配置。请拆分题库。");
+                return false;
+            }
+            if (baseFile.exists() && baseFile.length() > MAX_BASE_FILE_BYTES) {
+                getLogger().severe("base.yml 过大（" + (baseFile.length() / 1024)
+                        + "KB，上限 1MB），已保留旧配置。请检查文件是否被误写或损坏。");
                 return false;
             }
             newBase = YamlConfiguration.loadConfiguration(baseFile);

@@ -22,6 +22,9 @@ import java.util.logging.Logger;
  * 磁盘 IO 在 statsSaveLock 下串行，主线程只被短暂快照拷贝阻塞。
  */
 public class StatsStore {
+    /** stats.yml 体积上限：启动时同步解析，超大文件会卡主线程（正常数据远小于此值）。 */
+    private static final long MAX_STATS_FILE_BYTES = 5L * 1024 * 1024;
+
     private final Logger logger;
     private final File statsFile;
     private FileConfiguration statsCfg;
@@ -43,6 +46,13 @@ public class StatsStore {
 
     /** 从 stats.yml 加载累计统计。 */
     public void load() {
+        // 超大文件熔断：直接跳过加载，statsCfg 保持 null。
+        // save() 在 statsCfg == null 时直接返回，因此既不会 OOM 也不会用空数据覆盖原文件。
+        if (statsFile.exists() && statsFile.length() > MAX_STATS_FILE_BYTES) {
+            logger.severe("stats.yml 过大（" + (statsFile.length() / 1024 / 1024)
+                    + "MB，上限 5MB），已跳过加载与保存以免覆盖原文件。请检查该文件。");
+            return;
+        }
         statsCfg = YamlConfiguration.loadConfiguration(statsFile);
         synchronized (statsLock) {
             totalCorrect.clear();
