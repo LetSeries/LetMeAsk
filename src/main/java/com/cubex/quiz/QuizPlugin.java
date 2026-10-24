@@ -120,7 +120,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private BukkitTask statsSaveTask;
     private final Map<java.util.UUID, Integer> correctAnswerCounts = new HashMap<>();
     private final Map<java.util.UUID, Long> lastCorrectTimes = new HashMap<>();
-    private final Map<java.util.UUID, ChatHistory> recentChatMessages = new HashMap<>();
+    // 异步聊天线程按玩家并发读写：使用并发 Map，锁粒度收敛到单个 ChatHistory，
+    // 避免全服聊天共用一把锁造成串行化；clear()/remove() 可安全并发调用。
+    private final Map<java.util.UUID, ChatHistory> recentChatMessages = new java.util.concurrent.ConcurrentHashMap<>();
 
     // 答题统计已搬进 StatsStore（持久化到 stats.yml，key 为玩家 UUID 字符串；锁内部自持）
     StatsStore stats;
@@ -746,9 +748,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         q.postTime = System.currentTimeMillis();
         q.id = java.util.UUID.randomUUID();
         currentQuestion = q;
-        synchronized (recentChatMessages) {
-            recentChatMessages.clear();
-        }
+        recentChatMessages.clear();
         stats.incrementAsked();
         String line = messagePrefix() + msg("announce-question", " §f新题目: §f{arg}", q.question);
         // 动作栏模式由 tick 每秒重发这一行，所以先把文本存下来
@@ -877,9 +877,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         verifyStartMillis = 0L;
         verifyEpoch++;
         currentActionBarText = null; // 题目作废后不再重发动作栏
-        synchronized (recentChatMessages) {
-            recentChatMessages.clear();
-        }
+        recentChatMessages.clear();
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -975,12 +973,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
 
     private boolean recordChatMessage(java.util.UUID playerId, java.util.UUID questionId, long messageTime,
                                       boolean correctAnswer) {
-        synchronized (recentChatMessages) {
-            ChatHistory history = recentChatMessages.get(playerId);
-            if (history == null || !Objects.equals(history.questionId, questionId)) {
-                history = new ChatHistory(questionId);
-                recentChatMessages.put(playerId, history);
-            }
+        // compute 原子地取用/替换本玩家的历史，再只锁该玩家的 ChatHistory
+        ChatHistory history = recentChatMessages.compute(playerId, (id, existing) ->
+                (existing == null || !Objects.equals(existing.questionId, questionId))
+                        ? new ChatHistory(questionId) : existing);
+        synchronized (history) {
             history.timestamps.addLast(messageTime);
             while (history.timestamps.size() > antiBotChatHistoryCount) {
                 history.timestamps.removeFirst();
@@ -1138,9 +1135,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private void resetStreak(java.util.UUID uuid) {
         correctAnswerCounts.remove(uuid);
         lastCorrectTimes.remove(uuid);
-        synchronized (recentChatMessages) {
-            recentChatMessages.remove(uuid);
-        }
+        recentChatMessages.remove(uuid);
     }
 
     /**
