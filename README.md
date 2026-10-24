@@ -16,7 +16,7 @@
 - **匿名统计**：通过 bStats 收集匿名使用数据（类已 relocate 进插件自身包；插件 id 未注册前不上报，全局可在 `plugins/bStats/config.json` 关闭）
 - **灵活配置**：支持玩家名、UUID、服务器账户、LittleSkin 等支付方式
 
-注意: 人机验证需要依赖[HumanVerify](https://github.com/FZAoao/HumanVerify)插件。如果没有它，人机验证功能将无法使用，但是基本功能不会影响。
+注意: 人机验证需要依赖[HumanVerify](https://github.com/FZAoao/HumanVerify)插件。如果没有它，触发验证时默认 **拒绝发奖并作废本轮**（`anti-bot-verify-unavailable: deny`）——这是防止脚本绕过验证刷奖励的安全默认。确实需要旧版“直接发奖”行为时，把该项改成 `award`。
 
 ## 环境要求
 
@@ -76,6 +76,11 @@ anti-bot-correct-answer-threshold: 3
 # 防脚本枚举：窗口填满 N 条后，所有相邻间隔都低于该秒数才踢出（N=3~20；秒数 0=禁用）
 anti-bot-chat-history-count: 3
 anti-bot-chat-min-interval-seconds: 0.5
+
+# 人机验证服务不可用（未安装 HumanVerify）时的策略：
+#   deny  = 拒绝发奖并作废本轮（默认，防止脚本绕过验证刷奖励）
+#   award = 降级为直接发奖（旧行为，有脚本刷奖励风险）
+anti-bot-verify-unavailable: deny
 ```
 
 只有最近 `N` 条消息组成完整窗口，且**每一对相邻消息**都快于阈值，才在玩家答对时踢人；只踢刷屏玩家，不会作废本轮题目。
@@ -260,7 +265,7 @@ CI 每次构建会自动追加 commit 短哈希（如 `2.1.0-a1b2c3d`），`late
 ## 常见问题
 
 **Q：没装 Vault/HumanVerify 能用吗？**
-A：能。无 Vault 时纯公告无奖励；无 HumanVerify 时触发验证直接发奖（缺失告警只刷一次）。
+A：能。无 Vault 时纯公告无奖励；无 HumanVerify 时默认在触发验证的那一刻拒绝发奖并作废本轮（`anti-bot-verify-unavailable: deny`），配置为 `award` 可恢复直接发奖。
 
 **Q：出了题没人答对怎么办？**
 A：`question-timeout-seconds` 超时后自动公布答案并出下一题，设 `0` 禁用超时。

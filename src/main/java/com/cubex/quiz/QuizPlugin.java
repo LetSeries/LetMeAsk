@@ -66,6 +66,9 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     // 模糊阈值已搬进 QuestionMatcher（自带 volatile），主类不再持有
     private volatile int antiBotChatHistoryCount;
     private volatile double antiBotChatMinIntervalSeconds;
+    // 人机验证服务不可用（未安装 HumanVerify）时的策略：
+    // deny=拒绝发奖并作废本轮（默认，防止脚本绕过验证刷奖励）/ award=降级直接发奖（旧行为）
+    private volatile boolean denyWhenVerifyUnavailable = true;
     // 答错反馈：只提示本人，可配置开关+冷却（防刷屏）；0=关闭
     private volatile boolean wrongFeedbackEnabled = true;
     private volatile long wrongFeedbackCooldownSeconds = 5L;
@@ -318,6 +321,17 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         antiBotStreakWindowSeconds = Math.max(0L, baseCfg.getLong("anti-bot-streak-window-seconds", 300L));
         antiBotChatHistoryCount = Math.min(20, Math.max(3, baseCfg.getInt("anti-bot-chat-history-count", 3)));
         antiBotChatMinIntervalSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-chat-min-interval-seconds", 0.5));
+        String verifyUnavailable = baseCfg.getString("anti-bot-verify-unavailable", "deny");
+        if ("award".equalsIgnoreCase(verifyUnavailable)) {
+            denyWhenVerifyUnavailable = false;
+        } else if ("deny".equalsIgnoreCase(verifyUnavailable)) {
+            denyWhenVerifyUnavailable = true;
+        } else {
+            // 非法值回退到安全默认，避免一个错字悄悄关闭反作弊
+            denyWhenVerifyUnavailable = true;
+            getLogger().warning("anti-bot-verify-unavailable 配置无效（" + verifyUnavailable
+                    + "），已回退 deny。可选：award / deny");
+        }
         wrongFeedbackEnabled = baseCfg.getBoolean("wrong-feedback.enabled", true);
         wrongFeedbackCooldownSeconds = Math.max(0L, baseCfg.getLong("wrong-feedback.cooldown-seconds", 5L));
         verifyTimeoutSeconds = Math.max(10L, baseCfg.getLong("verify-timeout-seconds", 120L));
@@ -1002,10 +1016,17 @@ public class QuizPlugin extends JavaPlugin implements Listener {
             Object future = humanVerify.requestVerification(p);
 
             if (future == null) {
-                // 验证服务调不起来：按 README 承诺降级为直接发奖，不作废玩家答案
+                // 验证服务不可用：默认拒绝发奖，防止脚本用“答得快/连对多”绕过验证刷奖励。
+                // anti-bot-verify-unavailable=award 可恢复旧行为（降级直接发奖）。
                 // 注意：必须先消耗本题，否则题目残留可被无限次答对领奖
                 clearQuestionState();
-                awardWinner(p);
+                if (denyWhenVerifyUnavailable) {
+                    getLogger().warning(p.getName() + " 触发人机验证但验证服务不可用，本轮按 deny 策略不予发奖");
+                    sendModeLegacy(p, messagePrefix() + msg("announce-verify-unavailable",
+                            " §c人机验证服务不可用，本轮答案不予发奖。", null));
+                } else {
+                    awardWinner(p);
+                }
             } else {
                 verifying = true;
                 verifyingPlayer = player.getUniqueId();
