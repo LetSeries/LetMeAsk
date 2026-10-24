@@ -55,8 +55,10 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile boolean economyAvailable = false;
 
     // 配置项缓存
+    // 注意：rewardAmount / balanceRetrySeconds / baseCfg 会被异步发奖线程与
+    // 异步聊天线程读取（reload 在主线程写），必须 volatile 保证可见性
     private String payerName;
-    private double rewardAmount;
+    private volatile double rewardAmount;
     private long questionIntervalSeconds;
     private long questionTimeoutSeconds;
     private double antiBotThresholdSeconds;
@@ -74,7 +76,7 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private volatile long wrongFeedbackCooldownSeconds = 5L;
     private final Map<java.util.UUID, Long> wrongFeedbackLast = new HashMap<>();
     private long verifyTimeoutSeconds;
-    private long balanceRetrySeconds = 30L; // 暂停后每隔多少秒复查一次出资人余额
+    private volatile long balanceRetrySeconds = 30L; // 暂停后每隔多少秒复查一次出资人余额（异步发奖线程也会读）
     private volatile long nextBalanceCheckMillis = 0L;
     // 人机验证桥接已搬进 HumanVerifyBridge（反射调用+降级+一次性告警+结果判定）
     private boolean leaderboardBroadcastEnabled = true;
@@ -104,7 +106,8 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     // 配置文件
     private File baseFile;
     private File questionsFile;
-    private FileConfiguration baseCfg;
+    // 异步聊天线程经 Messages 读 base.yml（reload 在主线程整体替换引用），需 volatile
+    private volatile FileConfiguration baseCfg;
 
     /** 供 Messages 子系统惰性读取 base.yml 配置。 */
     FileConfiguration getBaseCfg() {

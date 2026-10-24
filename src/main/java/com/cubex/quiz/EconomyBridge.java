@@ -17,21 +17,26 @@ public class EconomyBridge {
     private final Logger logger;
 
     // Vault 经济服务实例（Object 持有，避免编译期依赖 Vault API）
-    private Object econ;
+    // econ/economyClass 由主线程 setup 写入、异步发奖线程读取，需 volatile
+    private volatile Object econ;
     // 反射方法缓存：status 余额异步查询后不再是主线程独占，用并发容器
     // ConcurrentHashMap 不存 null，缺失的方法记在 missingMethods 里
-    private Class<?> economyClass;
+    private volatile Class<?> economyClass;
     private final Map<String, Method> economyMethods = new java.util.concurrent.ConcurrentHashMap<>();
     private final Set<String> missingMethods = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    private String providerName = null;
-    private boolean bankSupport = true;
+    private volatile String providerName = null;
+    private volatile boolean bankSupport = true;
 
-    // 解析后的出资人信息（支持 UUID / 玩家名 / Server / LittleSkin 前缀）
-    private org.bukkit.OfflinePlayer payerOffline = null;
-    private boolean payerIsServer = false;
-    private boolean payerUsesUuid = false;
-    private String payerDisplay = null;
+    /**
+     * 解析后的出资人信息（支持 UUID / 玩家名 / Server / LittleSkin 前缀）。
+     * 用不可变快照整体替换：reload 在主线程写、异步发奖线程读，
+     * 若分字段写入会读到“新账户名 + 旧 isServer”的撕裂组合，导致扣错账户。
+     */
+    private record PayerInfo(org.bukkit.OfflinePlayer offline, boolean server,
+                             boolean usesUuid, String display) {}
+
+    private volatile PayerInfo payer = new PayerInfo(null, false, false, null);
 
     public EconomyBridge(Logger logger) {
         this.logger = logger;
@@ -72,60 +77,56 @@ public class EconomyBridge {
     }
 
     public String getPayerDisplay() {
-        return payerDisplay;
+        return payer.display();
     }
 
     public boolean isPayerServer() {
-        return payerIsServer;
+        return payer.server();
     }
 
-    public void resolvePayer(String payer) {
-        payerOffline = null;
-        payerIsServer = false;
-        payerUsesUuid = false;
-        payerDisplay = payer;
-        if (payer == null) return;
-        if (payer.equalsIgnoreCase("server") || payer.equalsIgnoreCase("console")) {
-            payerIsServer = true;
-            payerDisplay = payer;
+    public void resolvePayer(String payerName) {
+        if (payerName == null) {
+            payer = new PayerInfo(null, false, false, null);
+            return;
+        }
+        if (payerName.equalsIgnoreCase("server") || payerName.equalsIgnoreCase("console")) {
+            payer = new PayerInfo(null, true, false, payerName);
             return;
         }
         // 支持 littleskin:uuid 或 littleskin:name 两种写法
-        if (payer.toLowerCase().startsWith("littleskin:")) {
-            String v = payer.substring(payer.indexOf(":") + 1);
+        if (payerName.toLowerCase().startsWith("littleskin:")) {
+            String v = payerName.substring(payerName.indexOf(":") + 1);
             try {
                 java.util.UUID uuid = java.util.UUID.fromString(v);
-                payerOffline = Bukkit.getOfflinePlayer(uuid);
-                payerDisplay = uuid.toString();
+                payer = new PayerInfo(Bukkit.getOfflinePlayer(uuid), false, false, uuid.toString());
                 return;
             } catch (IllegalArgumentException ignored) {
                 // fall through to name
             }
-            payerOffline = Bukkit.getOfflinePlayer(v);
-            payerDisplay = payerOffline.getName() != null ? payerOffline.getName() : v;
+            org.bukkit.OfflinePlayer off = Bukkit.getOfflinePlayer(v);
+            payer = new PayerInfo(off, false, false, off.getName() != null ? off.getName() : v);
             return;
         }
         // 尝试按 UUID 解析
         try {
-            java.util.UUID uuid = java.util.UUID.fromString(payer);
-            payerOffline = Bukkit.getOfflinePlayer(uuid);
-            payerUsesUuid = true;
-            payerDisplay = uuid.toString();
+            java.util.UUID uuid = java.util.UUID.fromString(payerName);
+            payer = new PayerInfo(Bukkit.getOfflinePlayer(uuid), false, true, uuid.toString());
             return;
         } catch (IllegalArgumentException ignored) {
         }
         // 兜底按玩家名处理
-        payerOffline = Bukkit.getOfflinePlayer(payer);
-        payerDisplay = payerOffline.getName() != null ? payerOffline.getName() : payer;
+        org.bukkit.OfflinePlayer off = Bukkit.getOfflinePlayer(payerName);
+        payer = new PayerInfo(off, false, false, off.getName() != null ? off.getName() : payerName);
     }
 
     /** 判断答对者是否为出资人（UUID 优先，其次名字忽略大小写比对）。 */
     public boolean isPayer(Player player) {
         if (player == null) return false;
-        if (payerIsServer) return false; // Server/Console 账户不可能是真实玩家
-        if (payerOffline != null && player.getUniqueId().equals(payerOffline.getUniqueId())) return true;
+        PayerInfo p = payer; // 单次快照，避免字段间不一致
+        if (p.server()) return false; // Server/Console 账户不可能是真实玩家
+        if (p.offline() != null && player.getUniqueId().equals(p.offline().getUniqueId())) return true;
         String name = player.getName();
-        return name != null && payerDisplay != null && name.equalsIgnoreCase(payerDisplay);
+        return name != null && p.display() != null && name.equalsIgnoreCase(p.display());
     }
 
     private String readEconomyName() {
@@ -149,19 +150,20 @@ public class EconomyBridge {
 
     public double getBalanceOf(String who) {
         if (econ == null) return 0.0;
-        if (payerIsServer && bankSupport) {
+        PayerInfo p = payer; // 单次快照
+        if (p.server() && bankSupport) {
             Double balance = extractBalance(invoke("bankBalance", new Class<?>[]{String.class}, who));
             if (balance != null) return saneBalance(balance);
         }
         // 注意：invoke 内部已捕获全部异常并返回 null，外层无需 try-catch
-        if (payerUsesUuid && payerOffline != null) {
-            Object uuidResponse = invoke("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
+        if (p.usesUuid() && p.offline() != null) {
+            Object uuidResponse = invoke("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, p.offline());
             if (uuidResponse instanceof Number) return saneBalance(((Number) uuidResponse).doubleValue());
         }
         Object response = invoke("getBalance", new Class<?>[]{String.class}, who);
         if (response instanceof Number) return saneBalance(((Number) response).doubleValue());
-        if (payerOffline != null) {
-            Object offlineResponse = invoke("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, payerOffline);
+        if (p.offline() != null) {
+            Object offlineResponse = invoke("getBalance", new Class<?>[]{org.bukkit.OfflinePlayer.class}, p.offline());
             if (offlineResponse instanceof Number) return saneBalance(((Number) offlineResponse).doubleValue());
         }
         return 0.0;
@@ -178,19 +180,20 @@ public class EconomyBridge {
 
     public Object withdrawFrom(String who, double amount) {
         if (econ == null) return null;
-        if (payerIsServer && bankSupport) {
+        PayerInfo p = payer; // 单次快照
+        if (p.server() && bankSupport) {
             Object response = invoke("bankWithdraw", new Class<?>[]{String.class, double.class}, who, amount);
             if (response != null) return response;
         }
         // 注意：invoke 内部已捕获全部异常并返回 null，外层无需 try-catch
-        if (payerUsesUuid && payerOffline != null) {
-            Object uuidResponse = invoke("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
+        if (p.usesUuid() && p.offline() != null) {
+            Object uuidResponse = invoke("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, p.offline(), amount);
             if (uuidResponse != null) return uuidResponse;
         }
         Object response = invoke("withdrawPlayer", new Class<?>[]{String.class, double.class}, who, amount);
         if (response != null) return response;
-        if (payerOffline != null) {
-            Object offlineResponse = invoke("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
+        if (p.offline() != null) {
+            Object offlineResponse = invoke("withdrawPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, p.offline(), amount);
             if (offlineResponse != null) return offlineResponse;
         }
         return null;
@@ -216,17 +219,18 @@ public class EconomyBridge {
      */
     public Object refundToPayer(double amount) {
         if (econ == null) return null;
+        PayerInfo p = payer; // 单次快照，避免退款通道与扣款通道判定不一致
         // 注意：invoke 内部已捕获全部异常并返回 null，外层无需 try-catch
-        if (payerIsServer && bankSupport) {
-            Object response = invoke("bankDeposit", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
+        if (p.server() && bankSupport) {
+            Object response = invoke("bankDeposit", new Class<?>[]{String.class, double.class}, p.display(), amount);
             if (response != null) return response;
         }
-        if (payerOffline != null && (payerUsesUuid || payerDisplay == null
-                || (payerOffline.getName() != null && payerOffline.getName().equals(payerDisplay)))) {
-            Object offlineResponse = invoke("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, payerOffline, amount);
+        if (p.offline() != null && (p.usesUuid() || p.display() == null
+                || (p.offline().getName() != null && p.offline().getName().equals(p.display())))) {
+            Object offlineResponse = invoke("depositPlayer", new Class<?>[]{org.bukkit.OfflinePlayer.class, double.class}, p.offline(), amount);
             if (offlineResponse != null) return offlineResponse;
         }
-        Object response = invoke("depositPlayer", new Class<?>[]{String.class, double.class}, payerDisplay, amount);
+        Object response = invoke("depositPlayer", new Class<?>[]{String.class, double.class}, p.display(), amount);
         if (response != null) return response;
         return null;
     }
