@@ -893,8 +893,11 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         boolean chatTooFast = recordChatMessage(player.getUniqueId(), snapshot.id, messageTime, correctAnswer);
 
         if (correctAnswer) {
-            // 切主线程发奖，携带题目 id：若题目已轮换/作废则拒绝，防止旧题答案领走新题奖励
-            Bukkit.getScheduler().runTask(this, () -> handleCorrectAnswer(player, snapshot.id, chatTooFast));
+            // 切主线程发奖，携带题目 id：若题目已轮换/作废则拒绝，防止旧题答案领走新题奖励。
+            // 必须在调度前快照 id：Question 对象会在题库中复用，publishQuestion 会原地改写 id，
+            // lambda 里再读 snapshot.id 可能读到下一轮的值。
+            final java.util.UUID questionId = snapshot.id;
+            Bukkit.getScheduler().runTask(this, () -> handleCorrectAnswer(player, questionId, chatTooFast));
         } else {
             // 答错反馈：只提示本人（不广播），按冷却节流防刷屏
             maybeWrongFeedback(player, messageTime);
