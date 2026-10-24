@@ -248,7 +248,7 @@ players:
 mvn clean package
 ```
 
-本项目统一使用 Maven 构建；仓库里的 Gradle 脚本与 `libs/` 是历史遗留构建物，不作为维护中的构建入口。
+本项目统一使用 Maven 构建（`mvn clean package`）；仓库不再包含 Gradle 脚本或本地 jar。
 
 ### 版本管理
 
