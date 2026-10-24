@@ -29,6 +29,9 @@ import java.util.logging.Logger;
  * 背包满时掉在脚下（不清背包、不取消发奖）。
  */
 public class ItemRewards {
+    /** 附魔等级上限：addUnsafeEnchantments 接受任意 int，误配会产生破坏平衡/异常 NBT 的物品。 */
+    private static final int MAX_ENCHANT_LEVEL = 255;
+
     private final Logger logger;
     private final Random random = new Random();
 
@@ -142,7 +145,13 @@ public class ItemRewards {
                     }
                     int level = 1;
                     if (e.getValue() instanceof Number) {
-                        level = Math.max(1, ((Number) e.getValue()).intValue());
+                        int rawLevel = ((Number) e.getValue()).intValue();
+                        level = Math.min(MAX_ENCHANT_LEVEL, Math.max(1, rawLevel));
+                        if (level != rawLevel) {
+                            logger.warning("物品 " + material + " 附魔 " + ench.getKey().getKey()
+                                    + " 等级 " + rawLevel + " 越界，已钳制为 " + level
+                                    + "（范围 1~" + MAX_ENCHANT_LEVEL + "）。");
+                        }
                     }
                     enchs.put(ench, level);
                 }
