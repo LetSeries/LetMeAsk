@@ -11,6 +11,8 @@ public class QuestionMatcher {
     private volatile double fuzzySimilarityThreshold = 0.75;
 
     public void setFuzzySimilarityThreshold(double threshold) {
+        // NaN 会让后续 distance 上界计算退化为 0（静默改变匹配行为），保留上一次有效值
+        if (!Double.isFinite(threshold)) return;
         this.fuzzySimilarityThreshold = Math.min(1.0, Math.max(0.0, threshold));
     }
 

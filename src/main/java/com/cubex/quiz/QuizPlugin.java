@@ -251,6 +251,25 @@ public class QuizPlugin extends JavaPlugin implements Listener {
     private static final int MAX_ANSWER_LEN = 100;
     private static final int MAX_ANSWERS_TOTAL_LEN = 500;
 
+    /**
+     * 数值配置消毒：YAML 支持 .nan/.inf，而 Math.max/min 拦不住 NaN
+     * （Math.max(0.0, NaN) 仍是 NaN），NaN 一旦进入经济调用会污染 Vault 余额。
+     * 非有限值回退默认值，再钳制到 [min, max]。
+     */
+    private static double saneDouble(double value, double def, double min, double max) {
+        if (!Double.isFinite(value)) value = def;
+        return Math.min(max, Math.max(min, value));
+    }
+
+    /** 长整数配置钳制：.nan 经 getLong 会变 0、.inf 会变 Long.MAX_VALUE，用区间兜住并防溢出。 */
+    private static long saneLong(long value, long min, long max) {
+        return Math.min(max, Math.max(min, value));
+    }
+
+    private static int saneInt(int value, int min, int max) {
+        return Math.min(max, Math.max(min, value));
+    }
+
     private boolean loadConfigValues() {
         // load base and questions from their own files
         baseFile = new File(getDataFolder(), "base.yml");
@@ -313,14 +332,15 @@ public class QuizPlugin extends JavaPlugin implements Listener {
         messages.setLanguage(baseCfg.getString("language", "zh")); // 语言开关：zh/en，其他值回退中文
 
         payerName = baseCfg.getString("payer", "Server");
-        rewardAmount = Math.max(0.0, baseCfg.getDouble("reward", 50.0));
-        questionIntervalSeconds = Math.max(5L, baseCfg.getLong("question-interval-seconds", 60L));
-        questionTimeoutSeconds = Math.max(0L, baseCfg.getLong("question-timeout-seconds", 30L));
-        antiBotThresholdSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-threshold-seconds", 1.0));
-        antiBotCorrectAnswerThreshold = Math.max(0, baseCfg.getInt("anti-bot-correct-answer-threshold", 3));
-        antiBotStreakWindowSeconds = Math.max(0L, baseCfg.getLong("anti-bot-streak-window-seconds", 300L));
-        antiBotChatHistoryCount = Math.min(20, Math.max(3, baseCfg.getInt("anti-bot-chat-history-count", 3)));
-        antiBotChatMinIntervalSeconds = Math.max(0.0, baseCfg.getDouble("anti-bot-chat-min-interval-seconds", 0.5));
+        // 所有数值配置统一消毒：NaN/∞ 回退默认值，超范围钳制（防溢出与污染经济后端）
+        rewardAmount = saneDouble(baseCfg.getDouble("reward", 50.0), 50.0, 0.0, 1.0e9);
+        questionIntervalSeconds = saneLong(baseCfg.getLong("question-interval-seconds", 60L), 5L, 86400L);
+        questionTimeoutSeconds = saneLong(baseCfg.getLong("question-timeout-seconds", 30L), 0L, 86400L);
+        antiBotThresholdSeconds = saneDouble(baseCfg.getDouble("anti-bot-threshold-seconds", 1.0), 1.0, 0.0, 3600.0);
+        antiBotCorrectAnswerThreshold = saneInt(baseCfg.getInt("anti-bot-correct-answer-threshold", 3), 0, 1000);
+        antiBotStreakWindowSeconds = saneLong(baseCfg.getLong("anti-bot-streak-window-seconds", 300L), 0L, 31536000L);
+        antiBotChatHistoryCount = saneInt(baseCfg.getInt("anti-bot-chat-history-count", 3), 3, 20);
+        antiBotChatMinIntervalSeconds = saneDouble(baseCfg.getDouble("anti-bot-chat-min-interval-seconds", 0.5), 0.5, 0.0, 60.0);
         String verifyUnavailable = baseCfg.getString("anti-bot-verify-unavailable", "deny");
         if ("award".equalsIgnoreCase(verifyUnavailable)) {
             denyWhenVerifyUnavailable = false;
@@ -333,20 +353,20 @@ public class QuizPlugin extends JavaPlugin implements Listener {
                     + "），已回退 deny。可选：award / deny");
         }
         wrongFeedbackEnabled = baseCfg.getBoolean("wrong-feedback.enabled", true);
-        wrongFeedbackCooldownSeconds = Math.max(0L, baseCfg.getLong("wrong-feedback.cooldown-seconds", 5L));
-        verifyTimeoutSeconds = Math.max(10L, baseCfg.getLong("verify-timeout-seconds", 120L));
-        balanceRetrySeconds = Math.max(5L, baseCfg.getLong("balance-retry-seconds", 30L));
+        wrongFeedbackCooldownSeconds = saneLong(baseCfg.getLong("wrong-feedback.cooldown-seconds", 5L), 0L, 86400L);
+        verifyTimeoutSeconds = saneLong(baseCfg.getLong("verify-timeout-seconds", 120L), 10L, 3600L);
+        balanceRetrySeconds = saneLong(baseCfg.getLong("balance-retry-seconds", 30L), 5L, 86400L);
         matcher.setFuzzySimilarityThreshold(
                 baseCfg.getDouble("fuzzy-similarity-threshold", matcher.getFuzzySimilarityThreshold()));
         leaderboardBroadcastEnabled = baseCfg.getBoolean("leaderboard-broadcast.enabled", true);
-        leaderboardBroadcastMinutes = Math.max(1L, baseCfg.getLong("leaderboard-broadcast.minutes", 60L));
-        leaderboardBroadcastCount = Math.min(20, Math.max(1, baseCfg.getInt("leaderboard-broadcast.count", 10)));
+        leaderboardBroadcastMinutes = saneLong(baseCfg.getLong("leaderboard-broadcast.minutes", 60L), 1L, 1440L);
+        leaderboardBroadcastCount = saneInt(baseCfg.getInt("leaderboard-broadcast.count", 10), 1, 20);
         celebrateEnabled = baseCfg.getBoolean("celebrate.enabled", true);
         celebrateTitle = baseCfg.getString("celebrate.title", "§6§l答对了！");
         celebrateSubtitle = baseCfg.getString("celebrate.subtitle", "§e+{reward} 金币");
         celebrateSound = baseCfg.getString("celebrate.sound", "ENTITY_PLAYER_LEVELUP");
-        celebrateVolume = (float) Math.max(0.0, baseCfg.getDouble("celebrate.volume", 1.0));
-        celebratePitch = (float) Math.max(0.0, baseCfg.getDouble("celebrate.pitch", 1.0));
+        celebrateVolume = (float) saneDouble(baseCfg.getDouble("celebrate.volume", 1.0), 1.0, 0.0, 10.0);
+        celebratePitch = (float) saneDouble(baseCfg.getDouble("celebrate.pitch", 1.0), 1.0, 0.0, 10.0);
         // 展示通道：老服没有这个键时走默认 chat，行为与升级前完全一致
         broadcastMode = normalizeBroadcastMode(baseCfg.getString("broadcast-mode", "chat"));
         // 物品奖励：缺失/非法时内部整体禁用，不影响金币流程
